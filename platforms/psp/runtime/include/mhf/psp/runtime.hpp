@@ -198,6 +198,16 @@ public:
         last_import_.store(name, std::memory_order_relaxed);
         imports_.fetch_add(1, std::memory_order_relaxed);
     }
+    // The camera-input hook runs only while the hunt orbit camera is active. The frontend
+    // uses this short-lived signal to retain the digital fallback in the village.
+    void note_analog_camera_update(std::uint64_t timestamp_us) noexcept {
+        camera_hook_update_us_.store(timestamp_us, std::memory_order_relaxed);
+    }
+    [[nodiscard]] bool analog_camera_active() const {
+        const std::uint64_t last = camera_hook_update_us_.load(std::memory_order_relaxed);
+        const std::uint64_t now = now_us();
+        return last != 0 && now >= last && now - last < 250'000u;
+    }
 
 private:
     RuntimeOptions options_;
@@ -206,6 +216,7 @@ private:
     std::thread ticker_;                 // raises abi::interrupt_pending every few milliseconds
     std::atomic<bool> ticker_stop_{false};
     std::atomic<std::uint64_t> frames_{0};
+    std::atomic<std::uint64_t> camera_hook_update_us_{0};
     std::atomic<std::uint64_t> imports_{0};
     std::atomic<const char *> last_import_{nullptr};
     std::vector<FunctionEntry> functions_; // sorted by address (main modules)
