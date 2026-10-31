@@ -33,15 +33,15 @@ $CMakeCommand = Get-Command "cmake.exe" -ErrorAction SilentlyContinue
 if (-not $CMakeCommand) { $CMakeCommand = Get-Command "cmake" -ErrorAction SilentlyContinue }
 $NinjaCommand = Get-Command "ninja.exe" -ErrorAction SilentlyContinue
 if (-not $NinjaCommand) { $NinjaCommand = Get-Command "ninja" -ErrorAction SilentlyContinue }
-$CompilerCommand = Get-Command "cl.exe" -ErrorAction SilentlyContinue
-if (-not $CompilerCommand) { $CompilerCommand = Get-Command "cl" -ErrorAction SilentlyContinue }
+$CompilerCommand = Get-Command "clang-cl.exe" -ErrorAction SilentlyContinue
+if (-not $CompilerCommand) { $CompilerCommand = Get-Command "clang-cl" -ErrorAction SilentlyContinue }
 
 if (-not $CMakeCommand -or -not $NinjaCommand -or -not $CompilerCommand) {
     Stop-WithMessage @"
 Abra o 'Developer PowerShell for VS 2022' e execute o script novamente.
-Ele precisa encontrar CMake, Ninja e o compilador MSVC (cl.exe).
-No Visual Studio Installer, instale a carga 'Desenvolvimento para desktop com C++'
-e os componentes CMake/Ninja.
+Ele precisa encontrar CMake, Ninja e clang-cl.exe.
+No Visual Studio Installer, instale a carga 'Desenvolvimento para desktop com C++',
+o componente 'C++ Clang tools for Windows' e os componentes CMake/Ninja.
 "@
 }
 
@@ -118,8 +118,8 @@ $configureArgs = @(
     "-S", $RepoRoot,
     "-B", $BuildDir,
     "-G", "Ninja",
-    "-DCMAKE_C_COMPILER=cl",
-    "-DCMAKE_CXX_COMPILER=cl",
+    "-DCMAKE_C_COMPILER=clang-cl",
+    "-DCMAKE_CXX_COMPILER=clang-cl",
     "-DCMAKE_BUILD_TYPE=Release",
     "-DMHF_BUILD_TESTS=OFF",
     "-DMHF_BUILD_LAUNCHER=OFF",
