@@ -55,6 +55,7 @@ using mhf::psp::Runtime;
 
 bool g_log_overlays = true;
 std::uint64_t g_camera_last_update_us{};
+float g_camera_pitch_offset{}, g_camera_yaw_offset{};
 
 // Scripted input for unattended runs: "12.5:cross,15:start" presses each button for 150 ms at that time;
 // "20:sup/3" holds the analog stick up (sup, sdown, sleft, sright) or a button for 3 seconds.
@@ -120,38 +121,49 @@ void on_camera_orbit_inputs(Runtime &rt, Context &ctx) {
     constexpr std::uint32_t kYawOffset = 0x180u;
     constexpr float kDeadzone = 0.16f;
     constexpr float kRadiansPerSecond = 2.6f;
+    constexpr float kMaxPitchOffset = 1.1f;
 
     auto &memory = rt.memory();
     const std::uint32_t stack = ctx.gpr[29];
     if (!memory.contains(stack + kPitchOffset, 8u)) return;
 
     const std::uint64_t now = rt.now_us();
+    const auto &pad = mhf::psp::controller_state(rt);
+
+    // L is still the game's native camera-recenter button. Clear our persistent offset while it is held.
+    if ((pad.buttons & mhf::psp::buttons::kLTrigger) != 0u) {
+        g_camera_pitch_offset = 0.0f;
+        g_camera_yaw_offset = 0.0f;
+        g_camera_last_update_us = now;
+        return;
+    }
+
     float dt = 1.0f / 30.0f;
     if (g_camera_last_update_us != 0 && now > g_camera_last_update_us) {
         dt = std::clamp(static_cast<float>(now - g_camera_last_update_us) / 1'000'000.0f, 0.0f, 0.05f);
     }
     g_camera_last_update_us = now;
 
-    const auto &pad = mhf::psp::controller_state(rt);
     const float x = std::clamp(pad.rx, -1.0f, 1.0f);
     const float y = std::clamp(pad.ry, -1.0f, 1.0f);
     const float magnitude = std::sqrt(x * x + y * y);
-    if (magnitude <= kDeadzone || dt <= 0.0f) return;
+    if (magnitude > kDeadzone && dt > 0.0f) {
+        // Radial deadzone and normalized response; diagonal input does not exceed full-speed motion.
+        const float clamped_magnitude = std::min(magnitude, 1.0f);
+        const float response = (clamped_magnitude - kDeadzone) / (magnitude * (1.0f - kDeadzone));
+        const float dx = x * response;
+        const float dy = y * response;
+        g_camera_yaw_offset = std::remainder(g_camera_yaw_offset + dx * kRadiansPerSecond * dt, 6.28318530718f);
+        g_camera_pitch_offset = std::clamp(g_camera_pitch_offset + dy * kRadiansPerSecond * dt,
+                                           -kMaxPitchOffset, kMaxPitchOffset);
+    }
 
-    // Radial deadzone and normalized response; diagonal input does not exceed full-speed motion.
-    const float clamped_magnitude = std::min(magnitude, 1.0f);
-    const float response = (clamped_magnitude - kDeadzone) / (magnitude * (1.0f - kDeadzone));
-    const float dx = x * response;
-    const float dy = y * response;
-
-    float pitch = std::bit_cast<float>(memory.load32(stack + kPitchOffset));
-    float yaw = std::bit_cast<float>(memory.load32(stack + kYawOffset));
+    const float pitch = std::bit_cast<float>(memory.load32(stack + kPitchOffset));
+    const float yaw = std::bit_cast<float>(memory.load32(stack + kYawOffset));
     if (!std::isfinite(pitch) || !std::isfinite(yaw)) return;
 
-    pitch += dy * kRadiansPerSecond * dt;
-    yaw += dx * kRadiansPerSecond * dt;
-    memory.store32(stack + kPitchOffset, std::bit_cast<std::uint32_t>(pitch));
-    memory.store32(stack + kYawOffset, std::bit_cast<std::uint32_t>(yaw));
+    memory.store32(stack + kPitchOffset, std::bit_cast<std::uint32_t>(pitch + g_camera_pitch_offset));
+    memory.store32(stack + kYawOffset, std::bit_cast<std::uint32_t>(yaw + g_camera_yaw_offset));
 }
 
 // The disc's product code ("ULES01213") from its PARAM.SFO, which ad hoc servers use to group the players of one game.
