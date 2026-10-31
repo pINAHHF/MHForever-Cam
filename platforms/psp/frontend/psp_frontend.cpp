@@ -1379,7 +1379,7 @@ bool step_menu(Frontend::Impl &impl, Runtime &rt) {
     return open;
 }
 
-ControllerState map_input(const host::GamepadState &g) {
+ControllerState map_input(const host::GamepadState &g, bool analog_camera) {
     ControllerState s;
     auto set = [&](bool on, std::uint32_t bit) { if (on) s.buttons |= bit; };
     set(g.south, buttons::kCross);
@@ -1394,15 +1394,19 @@ ControllerState map_input(const host::GamepadState &g) {
     set(g.down, buttons::kDown);
     set(g.left, buttons::kLeft);
     set(g.right, buttons::kRight);
-    // The PSP has no right stick: it drives the D-pad, which is what the game uses for its camera (docs/07-launcher-ux.md §5).
-    constexpr float kRightStickThreshold = 0.5f;
-    set(g.right_y < -kRightStickThreshold, buttons::kUp);
-    set(g.right_y > kRightStickThreshold, buttons::kDown);
-    set(g.right_x < -kRightStickThreshold, buttons::kLeft);
-    set(g.right_x > kRightStickThreshold, buttons::kRight);
+    // Keep the old D-pad emulation for builds without a game-specific analog camera hook.
+    if (!analog_camera) {
+        constexpr float kRightStickThreshold = 0.5f;
+        set(g.right_y < -kRightStickThreshold, buttons::kUp);
+        set(g.right_y > kRightStickThreshold, buttons::kDown);
+        set(g.right_x < -kRightStickThreshold, buttons::kLeft);
+        set(g.right_x > kRightStickThreshold, buttons::kRight);
+    }
     auto axis = [](float v) { return static_cast<std::uint8_t>(std::clamp(128.0f + v * 127.0f, 0.0f, 255.0f)); };
     s.lx = axis(g.left_x);
     s.ly = axis(g.left_y);
+    s.rx = std::clamp(g.right_x, -1.0f, 1.0f);
+    s.ry = std::clamp(g.right_y, -1.0f, 1.0f);
     return s;
 }
 
@@ -1438,7 +1442,7 @@ void Frontend::attach(Runtime &rt, std::function<void()> extra) {
                 set_controller_state(*runtime, ControllerState{}); // the menu has the input, the game runs on without it
                 step_menu(*impl, *runtime);
             } else {
-                set_controller_state(*runtime, map_input(pad));
+                set_controller_state(*runtime, map_input(pad, runtime->options().analog_camera_input));
                 update_dialogs(*impl, *runtime);
                 watch_friends(*impl, *runtime);
                 if (pad.guide && !impl->guide_down) impl->menu_requested = true;
