@@ -19,6 +19,16 @@ if(MHF_BUILD_TESTS)
     target_link_libraries(test_mhfu_data_bin PRIVATE mhf_mhfu_data)
     mhf_target_warnings(test_mhfu_data_bin)
     add_test(NAME mhfu_data_bin COMMAND test_mhfu_data_bin)
+
+    # Compile the real host with the analog-camera branch enabled, without game-derived generated code.
+    # The game program itself is still built locally from the player's own ISO.
+    add_library(mhfu_host_camera_compile OBJECT host/main.cpp)
+    target_include_directories(mhfu_host_camera_compile PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures)
+    target_link_libraries(mhfu_host_camera_compile PRIVATE mhf_psp_runtime mhf_psp_tools mhf_core)
+    if(TARGET mhf_psp_frontend)
+        target_link_libraries(mhfu_host_camera_compile PRIVATE mhf_psp_frontend)
+    endif()
+    mhf_target_warnings(mhfu_host_camera_compile)
 endif()
 
 # The game itself, built from code recompiled on the developer's machine (never committed, CONTRIBUTING.md).
