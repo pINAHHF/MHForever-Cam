@@ -62,7 +62,11 @@ public:
         : input_(input), analysis_(analysis), function_(function) {}
 
     std::string write() {
-        out_ << "void " << fn_name(function_.entry) << "(Runtime &rt, Context &ctx) {\n"
+        const auto replacement = input_.replacements.find(function_.entry);
+        const bool has_replacement = replacement != input_.replacements.end();
+        const std::string function_name = fn_name(function_.entry);
+        out_ << "void " << function_name << (has_replacement ? "_original" : "")
+             << "(Runtime &rt, Context &ctx) {\n"
              << "    psprecomp::GuestMemory &mem = abi::memory(rt);\n"
              << "    std::uint32_t jump_target = 0u;\n"
              << "    (void)mem; (void)jump_target;\n";
@@ -86,6 +90,15 @@ public:
             out_ << "    default: break;\n    }\n";
         }
         out_ << "    return;\n}\n\n";
+        if (has_replacement) {
+            out_ << "void " << function_name << "(Runtime &rt, Context &ctx) {\n"
+                 << "    static const ReplacementFunction replacement = abi::find_replacement(rt, \""
+                 << cpp_escape(replacement->second) << "\");\n"
+                 << "    if (replacement != nullptr) { replacement(rt, ctx, &" << function_name
+                 << "_original); return; }\n"
+                 << "    " << function_name << "_original(rt, ctx);\n"
+                 << "}\n\n";
+        }
         return out_.str();
     }
 
