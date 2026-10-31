@@ -222,7 +222,7 @@ void on_camera_orbit_inputs(Runtime &rt, Context &ctx) {
         // and floor checks still run afterwards and remain authoritative.
         const std::uint32_t height_entry = memory.load32(camera_data + kHeightEntryPointerOffset);
         if (height_entry != 0 && height_entry == g_camera_last_height_entry &&
-            memory.contains(height_entry + 4u, 12u) &&
+            memory.contains(height_entry + 4u, 16u) &&
             std::fabs(g_camera_pitch_offset - previous_pitch_offset) > 0.000001f) {
             const float orbit_y = std::bit_cast<float>(memory.load32(height_entry + 4u));
             const float orbit_z = std::bit_cast<float>(memory.load32(height_entry + 8u));
