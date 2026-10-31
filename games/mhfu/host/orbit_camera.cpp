@@ -40,7 +40,6 @@ constexpr std::uint32_t kCameraPlayer = 0xA84u;
 constexpr std::uint32_t kCameraAreaConfig = 0xA90u;
 
 constexpr std::uint32_t kStdIsFalldown = 0x35u;
-constexpr std::uint32_t kStdFollowEntry = 0x70u;
 constexpr std::uint32_t kStdGoalRotation = 0x80u;
 constexpr std::uint32_t kStdButtons = 0x84u;
 constexpr std::uint32_t kStdRisingEdge = 0x86u;
