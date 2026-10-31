@@ -128,6 +128,7 @@ void on_camera_orbit_inputs(Runtime &rt, Context &ctx) {
     if (!memory.contains(stack + kPitchOffset, 8u)) return;
 
     const std::uint64_t now = rt.now_us();
+    rt.note_analog_camera_update(now);
     const auto &pad = mhf::psp::controller_state(rt);
 
     // L is still the game's native camera-recenter button. Clear our persistent offset while it is held.
