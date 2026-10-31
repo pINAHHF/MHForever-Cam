@@ -121,3 +121,5 @@ jobs:
         env:
           UBSAN_OPTIONS: print_stacktrace=1
         run: ctest --preset linux-clang-asan
+
+# Trigger validation after repository Actions activation.
