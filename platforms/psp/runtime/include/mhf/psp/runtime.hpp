@@ -95,6 +95,9 @@ struct RuntimeOptions {
     // System dialogs (messages, keyboard, save/load) wait for the player and are drawn by the frontend. Off for
     // headless runs and tests, where they answer at once (yes / the default text / the game's own slot).
     bool interactive_dialogs = false;
+    // Whether the selected game build has a native analog right-stick camera hook; otherwise the frontend keeps the
+    // legacy right-stick-to-D-pad mapping.
+    bool analog_camera_input = false;
     // Player volume preferences, 0..100 (100 = as the game mixes it): music is decoded ATRAC audio, effects the voice
     // mixer (sceSasCore).
     int music_volume = 100;
