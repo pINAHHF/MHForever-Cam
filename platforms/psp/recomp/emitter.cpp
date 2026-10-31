@@ -139,6 +139,10 @@ private:
                 out_ << "    abi::jump(rt, ctx, " << hex32(pc) << "u); return;\n";
                 return;
             }
+            if (const auto hook = input_.pc_hooks.find(pc); hook != input_.pc_hooks.end()) {
+                out_ << "    { static const HookFunction hook = abi::find_hook(rt, \"" << cpp_escape(hook->second) << "\");\\n"
+                     << "      if (hook != nullptr) hook(rt, ctx); }\\n";
+            }
             const auto d = decode(pc);
             if (!d.has_delay_slot() && d.kind != OpcodeKind::Jr && d.kind != OpcodeKind::Jalr) {
                 out_ << emit_instruction(d, pc);
@@ -156,6 +160,9 @@ private:
 
     void write_control_transfer(const DecodedInstruction &d, std::uint32_t pc) {
         transfer_pc_ = pc;
+        if (input_.pc_hooks.contains(pc + 4u)) {
+            throw std::logic_error("PC hook cannot be placed in a branch delay slot at " + hex32(pc + 4u));
+        }
         const auto slot = decode(pc + 4u);
         instruction_count_ += 2;
         if (slot.is_control_flow() || slot.kind == OpcodeKind::Jr || slot.kind == OpcodeKind::Jalr) {
