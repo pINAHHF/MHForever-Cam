@@ -124,7 +124,9 @@ void on_camera_orbit_inputs(Runtime &rt, Context &ctx) {
     constexpr std::uint32_t kGoalRotationOffset = 0x80u; // StdCameraData::goal_rotation (s16)
     constexpr std::uint32_t kPositionYOffset = 0x04u;
     constexpr std::uint32_t kGoalPositionYOffset = 0x44u;
+    constexpr std::uint32_t kGoalTargetYOffset = 0x54u;
     constexpr std::uint32_t kHeightEntryPointerOffset = 0x70u;
+    constexpr std::uint32_t kHeightEntryHeightOffset = 0x10u;
     constexpr float kDeadzone = 0.16f;
     constexpr float kYawRadiansPerSecond = 2.6f;
     constexpr float kPitchRadiansPerSecond = 2.6f;
@@ -137,6 +139,7 @@ void on_camera_orbit_inputs(Runtime &rt, Context &ctx) {
     if (!memory.contains(stack + kPitchOffset, 8u) ||
         !memory.contains(camera_data + kGoalRotationOffset, 4u) ||
         !memory.contains(camera_data + kGoalPositionYOffset, 4u) ||
+        !memory.contains(camera_data + kGoalTargetYOffset, 4u) ||
         !memory.contains(camera_data + kPositionYOffset, 4u) ||
         !memory.contains(camera_data + kHeightEntryPointerOffset, 4u)) return;
 
@@ -219,20 +222,32 @@ void on_camera_orbit_inputs(Runtime &rt, Context &ctx) {
         // and floor checks still run afterwards and remain authoritative.
         const std::uint32_t height_entry = memory.load32(camera_data + kHeightEntryPointerOffset);
         if (height_entry != 0 && height_entry == g_camera_last_height_entry &&
-            memory.contains(height_entry + 4u, 8u) &&
+            memory.contains(height_entry + 4u, 12u) &&
             std::fabs(g_camera_pitch_offset - previous_pitch_offset) > 0.000001f) {
             const float orbit_y = std::bit_cast<float>(memory.load32(height_entry + 4u));
             const float orbit_z = std::bit_cast<float>(memory.load32(height_entry + 8u));
+            const float entry_height = std::bit_cast<float>(
+                memory.load32(height_entry + kHeightEntryHeightOffset));
             const float old_pitch_y = std::cos(previous_pitch_offset) * orbit_y -
                                       std::sin(previous_pitch_offset) * orbit_z;
             const float new_pitch_y = std::cos(g_camera_pitch_offset) * orbit_y -
                                       std::sin(g_camera_pitch_offset) * orbit_z;
             const float previous_goal_y = std::bit_cast<float>(
                 memory.load32(camera_data + kGoalPositionYOffset));
+            const float previous_goal_target_y = std::bit_cast<float>(
+                memory.load32(camera_data + kGoalTargetYOffset));
+            const float camera_base_y = previous_goal_y - old_pitch_y;
+            const float target_base_y = previous_goal_target_y - entry_height;
             const float compensated_y = previous_goal_y + (new_pitch_y - old_pitch_y);
-            if (std::isfinite(orbit_y) && std::isfinite(orbit_z) &&
-                std::isfinite(previous_goal_y) && std::isfinite(compensated_y) &&
-                std::fabs(compensated_y) < 100000.0f) {
+
+            // In the normal orbit path, both goal values share the player's world Y:
+            // goal_position.y = player.y + rotated_offset.y, goal_target.y = player.y + entry.height.
+            // A mismatch means a special traversal/collision path is active; leave its native easing alone.
+            const bool normal_orbit = std::isfinite(camera_base_y) && std::isfinite(target_base_y) &&
+                                      std::fabs(camera_base_y - target_base_y) < 8.0f;
+            if (normal_orbit && std::isfinite(orbit_y) && std::isfinite(orbit_z) &&
+                std::isfinite(entry_height) && std::isfinite(previous_goal_y) &&
+                std::isfinite(compensated_y) && std::fabs(compensated_y) < 100000.0f) {
                 memory.store32(camera_data + kPositionYOffset,
                                std::bit_cast<std::uint32_t>(compensated_y));
             }
