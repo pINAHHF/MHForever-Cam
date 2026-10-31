@@ -32,7 +32,7 @@ namespace {
 void usage() {
     std::fprintf(stderr,
                  "usage: mhf_recomp --elf <file.elf> --out <dir> --name <identifier> [--parts N] [--nids nids.csv]\n"
-                 "                  [--overlays overlays.toml] [--symbols symbols.toml --hook <name>...]\n"
+                 "                  [--overlays overlays.toml] [--symbols symbols.toml --hook <name>... --entry <name>... --hook-pc <name>...]\n"
                  "                  [--list-imports]\n");
 }
 
@@ -148,6 +148,8 @@ void report(const std::string &name, const ProgramInput &input, const Analysis &
 int main(int argc, char **argv) {
     fs::path elf_path, out_dir, nids_path, overlays_path, symbols_path;
     std::vector<std::string> hook_names;
+    std::vector<std::string> entry_names;
+    std::vector<std::string> pc_hook_names;
     std::string name;
     std::size_t parts = 8;
     bool list_imports = false;
@@ -169,6 +171,8 @@ int main(int argc, char **argv) {
         else if (arg == "--overlays") overlays_path = value();
         else if (arg == "--symbols") symbols_path = value();
         else if (arg == "--hook") hook_names.push_back(value());
+        else if (arg == "--entry") entry_names.push_back(value());
+        else if (arg == "--hook-pc") pc_hook_names.push_back(value());
         else {
             usage();
             return 2;
@@ -225,10 +229,11 @@ int main(int argc, char **argv) {
             return 0;
         }
 
-        // Hooks by canonical name (games/<id>/regions/<id>/symbols.toml).
-        if (!hook_names.empty()) {
+        // Hooks, explicit analysis entries and instruction hooks by canonical name
+        // (games/<id>/regions/<id>/symbols.toml).
+        if (!hook_names.empty() || !entry_names.empty() || !pc_hook_names.empty()) {
             if (symbols_path.empty()) {
-                std::fprintf(stderr, "error: --hook needs --symbols\n");
+                std::fprintf(stderr, "error: --hook/--entry/--hook-pc needs --symbols\n");
                 return 2;
             }
             const auto symbols = toml::parse_file(symbols_path);
@@ -236,11 +241,36 @@ int main(int argc, char **argv) {
             for (const auto &hook : hook_names) {
                 const auto value = functions != symbols.tables.end() ? toml::get(functions->second, hook) : std::nullopt;
                 if (!value) {
-                    std::fprintf(stderr, "error: symbol %s not found in %s\n", hook.c_str(),
+                    std::fprintf(stderr, "error: function symbol %s not found in %s\n", hook.c_str(),
                                  symbols_path.string().c_str());
                     return 1;
                 }
                 input.hooks[static_cast<std::uint32_t>(toml::to_integer(*value))] = hook;
+            }
+            for (const auto &entry : entry_names) {
+                const auto value = functions != symbols.tables.end() ? toml::get(functions->second, entry) : std::nullopt;
+                if (!value) {
+                    std::fprintf(stderr, "error: entry symbol %s not found in %s\n", entry.c_str(),
+                                 symbols_path.string().c_str());
+                    return 1;
+                }
+                input.extra_entries.push_back(static_cast<std::uint32_t>(toml::to_integer(*value)));
+            }
+            const auto hook_sites = symbols.tables.find("hook_sites");
+            for (const auto &hook : pc_hook_names) {
+                const auto value = hook_sites != symbols.tables.end() ? toml::get(hook_sites->second, hook) : std::nullopt;
+                if (!value) {
+                    std::fprintf(stderr, "error: hook site %s not found in [hook_sites] of %s\n", hook.c_str(),
+                                 symbols_path.string().c_str());
+                    return 1;
+                }
+                const auto address = static_cast<std::uint32_t>(toml::to_integer(*value));
+                if ((address & 3u) != 0 || !in_ranges(input.code, address)) {
+                    std::fprintf(stderr, "error: hook site %s at %08X is not an aligned instruction in this ELF\n",
+                                 hook.c_str(), address);
+                    return 1;
+                }
+                input.pc_hooks[address] = hook;
             }
         }
 
@@ -254,6 +284,7 @@ int main(int argc, char **argv) {
             o.input.memory = &memory;
             o.input.imports = {};
             o.input.hooks = input.hooks;
+            o.input.pc_hooks = input.pc_hooks;
         }
         auto route = [&](std::uint32_t target, bool from_main) {
             if (in_ranges(input.code, target)) {
@@ -294,6 +325,15 @@ int main(int argc, char **argv) {
             for (const auto t : analyze(o.input).external_calls) route(t, false);
         }
         const auto analysis = analyze(input);
+        for (const auto &[address, hook] : input.pc_hooks) {
+            const bool found = std::any_of(analysis.functions.begin(), analysis.functions.end(), [&](const auto &item) {
+                return item.second.instructions.contains(address);
+            });
+            if (!found) {
+                throw std::runtime_error("PC hook " + hook + " at " + psprecomp::hex32(address) +
+                                         " is not in an analyzed function; add its function with --entry");
+            }
+        }
         for (const auto t : analysis.external_calls) route(t, true);
 
         EmitOptions options;
