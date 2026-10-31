@@ -129,7 +129,7 @@ void on_camera_orbit_inputs(Runtime &rt, Context &ctx) {
     constexpr std::uint32_t kHeightEntryHeightOffset = 0x10u;
     constexpr float kDeadzone = 0.16f;
     constexpr float kYawRadiansPerSecond = 2.6f;
-    constexpr float kPitchRadiansPerSecond = 2.6f;
+    constexpr float kPitchRadiansPerSecond = 4.2f;
     constexpr float kMaxPitchOffset = 1.1f;
     constexpr float kAngleUnitsPerRadian = 32768.0f / 3.14159265358979323846f;
 
@@ -189,6 +189,34 @@ void on_camera_orbit_inputs(Runtime &rt, Context &ctx) {
         dx /= magnitude;
         dy /= magnitude;
     }
+    // The stock orbit has a zero X/pitch angle. Keep our own absolute pitch while the
+    // normal follow-height entry is stable, rather than adding it to a transient native
+    // angle that can change during movement or camera recentering.
+    const std::uint32_t height_entry = memory.load32(camera_data + kHeightEntryPointerOffset);
+    const bool stable_height_entry = height_entry != 0 && height_entry == g_camera_last_height_entry &&
+                                     memory.contains(height_entry + 4u, 16u);
+    float orbit_y = 0.0f;
+    float orbit_z = 0.0f;
+    float entry_height = 0.0f;
+    float previous_goal_y = 0.0f;
+    bool normal_orbit = false;
+    if (stable_height_entry) {
+        orbit_y = std::bit_cast<float>(memory.load32(height_entry + 4u));
+        orbit_z = std::bit_cast<float>(memory.load32(height_entry + 8u));
+        entry_height = std::bit_cast<float>(memory.load32(height_entry + kHeightEntryHeightOffset));
+        previous_goal_y = std::bit_cast<float>(memory.load32(camera_data + kGoalPositionYOffset));
+        const float previous_goal_target_y = std::bit_cast<float>(
+            memory.load32(camera_data + kGoalTargetYOffset));
+        const float old_pitch_y = std::cos(g_camera_pitch_offset) * orbit_y -
+                                  std::sin(g_camera_pitch_offset) * orbit_z;
+        const float camera_base_y = previous_goal_y - old_pitch_y;
+        const float target_base_y = previous_goal_target_y - entry_height;
+        normal_orbit = std::isfinite(orbit_y) && std::isfinite(orbit_z) &&
+                       std::isfinite(entry_height) && std::isfinite(previous_goal_y) &&
+                       std::isfinite(camera_base_y) && std::isfinite(target_base_y) &&
+                       std::fabs(camera_base_y - target_base_y) < 8.0f;
+    }
+
     if ((dx != 0.0f || dy != 0.0f) && dt > 0.0f) {
         // Single-axis response is unchanged. Diagonal input is normalized so neither axis gains speed.
 
@@ -210,53 +238,39 @@ void on_camera_orbit_inputs(Runtime &rt, Context &ctx) {
             yaw += static_cast<float>(yaw_delta) / kAngleUnitsPerRadian;
         }
 
-        // SDL reports positive Y when the stick is pushed down. A negative pitch delta makes
-        // pushing up raise the view, while pitch remains independent from the horizontal yaw.
+        // This control scheme follows the game's camera convention: positive stick Y looks down,
+        // negative stick Y looks up. SDL's positive Y is physically down, so the sign is kept here.
         const float previous_pitch_offset = g_camera_pitch_offset;
-        g_camera_pitch_offset = std::clamp(g_camera_pitch_offset - dy * kPitchRadiansPerSecond * dt,
+        g_camera_pitch_offset = std::clamp(g_camera_pitch_offset + dy * kPitchRadiansPerSecond * dt,
                                            -kMaxPitchOffset, kMaxPitchOffset);
 
         // The stock follow camera eases its vertical position by only 12.5% per frame. Seed
         // that interpolation with the previous orbit goal plus the pitch-only displacement,
         // so analog pitch is not filtered eight times slower than yaw. The game's collision
         // and floor checks still run afterwards and remain authoritative.
-        const std::uint32_t height_entry = memory.load32(camera_data + kHeightEntryPointerOffset);
-        if (height_entry != 0 && height_entry == g_camera_last_height_entry &&
-            memory.contains(height_entry + 4u, 16u) &&
-            std::fabs(g_camera_pitch_offset - previous_pitch_offset) > 0.000001f) {
-            const float orbit_y = std::bit_cast<float>(memory.load32(height_entry + 4u));
-            const float orbit_z = std::bit_cast<float>(memory.load32(height_entry + 8u));
-            const float entry_height = std::bit_cast<float>(
-                memory.load32(height_entry + kHeightEntryHeightOffset));
+        if (normal_orbit && std::fabs(g_camera_pitch_offset - previous_pitch_offset) > 0.000001f) {
             const float old_pitch_y = std::cos(previous_pitch_offset) * orbit_y -
                                       std::sin(previous_pitch_offset) * orbit_z;
             const float new_pitch_y = std::cos(g_camera_pitch_offset) * orbit_y -
                                       std::sin(g_camera_pitch_offset) * orbit_z;
-            const float previous_goal_y = std::bit_cast<float>(
-                memory.load32(camera_data + kGoalPositionYOffset));
-            const float previous_goal_target_y = std::bit_cast<float>(
-                memory.load32(camera_data + kGoalTargetYOffset));
-            const float camera_base_y = previous_goal_y - old_pitch_y;
-            const float target_base_y = previous_goal_target_y - entry_height;
             const float compensated_y = previous_goal_y + (new_pitch_y - old_pitch_y);
-
-            // In the normal orbit path, both goal values share the player's world Y:
-            // goal_position.y = player.y + rotated_offset.y, goal_target.y = player.y + entry.height.
-            // A mismatch means a special traversal/collision path is active; leave its native easing alone.
-            const bool normal_orbit = std::isfinite(camera_base_y) && std::isfinite(target_base_y) &&
-                                      std::fabs(camera_base_y - target_base_y) < 8.0f;
-            if (normal_orbit && std::isfinite(orbit_y) && std::isfinite(orbit_z) &&
-                std::isfinite(entry_height) && std::isfinite(previous_goal_y) &&
-                std::isfinite(compensated_y) && std::fabs(compensated_y) < 100000.0f) {
+            if (std::isfinite(compensated_y) && std::fabs(compensated_y) < 100000.0f) {
                 memory.store32(camera_data + kPositionYOffset,
                                std::bit_cast<std::uint32_t>(compensated_y));
             }
         }
-        g_camera_last_height_entry = height_entry;
     }
 
-    memory.store32(stack + kPitchOffset,
-                   std::bit_cast<std::uint32_t>(pitch + g_camera_pitch_offset));
+    // In the normal third-person orbit, native pitch is zero. Replacing it (rather than
+    // accumulating on top of it) prevents movement/recentering from leaking into the Y axis.
+    if (normal_orbit) {
+        pitch = g_camera_pitch_offset;
+    } else {
+        pitch += g_camera_pitch_offset;
+    }
+    g_camera_last_height_entry = height_entry;
+
+    memory.store32(stack + kPitchOffset, std::bit_cast<std::uint32_t>(pitch));
     memory.store32(stack + kYawOffset, std::bit_cast<std::uint32_t>(yaw));
 }
 
