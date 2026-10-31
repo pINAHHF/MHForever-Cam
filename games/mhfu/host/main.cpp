@@ -57,6 +57,12 @@ bool g_log_overlays = true;
 std::uint64_t g_camera_last_update_us{};
 float g_camera_pitch_offset{};
 std::uint32_t g_camera_last_height_entry{};
+std::uint32_t g_camera_follow_config{};
+float g_camera_follow_y_offset{};
+float g_camera_follow_z_offset{};
+float g_camera_follow_height{};
+float g_camera_follow_fov{};
+bool g_camera_follow_profile_valid{};
 
 // Scripted input for unattended runs: "12.5:cross,15:start" presses each button for 150 ms at that time;
 // "20:sup/3" holds the analog stick up (sup, sdown, sleft, sright) or a button for 3 seconds.
@@ -125,8 +131,13 @@ void on_camera_orbit_inputs(Runtime &rt, Context &ctx) {
     constexpr std::uint32_t kPositionYOffset = 0x04u;
     constexpr std::uint32_t kGoalPositionYOffset = 0x44u;
     constexpr std::uint32_t kGoalTargetYOffset = 0x54u;
+    constexpr std::uint32_t kGoalFovOffset = 0x64u;
+    constexpr std::uint32_t kFollowConfigPointerOffset = 0x6Cu;
     constexpr std::uint32_t kHeightEntryPointerOffset = 0x70u;
     constexpr std::uint32_t kHeightEntryHeightOffset = 0x10u;
+    constexpr std::uint32_t kFollowEntriesOffset = 0x20u;
+    constexpr std::uint32_t kFollowEntryStride = 0x20u;
+    constexpr std::uint32_t kFollowEntryCount = 5u;
     constexpr float kDeadzone = 0.16f;
     constexpr float kYawRadiansPerSecond = 2.6f;
     constexpr float kPitchRadiansPerSecond = 4.2f;
@@ -140,6 +151,8 @@ void on_camera_orbit_inputs(Runtime &rt, Context &ctx) {
         !memory.contains(camera_data + kGoalRotationOffset, 4u) ||
         !memory.contains(camera_data + kGoalPositionYOffset, 4u) ||
         !memory.contains(camera_data + kGoalTargetYOffset, 4u) ||
+        !memory.contains(camera_data + kGoalFovOffset, 4u) ||
+        !memory.contains(camera_data + kFollowConfigPointerOffset, 4u) ||
         !memory.contains(camera_data + kPositionYOffset, 4u) ||
         !memory.contains(camera_data + kHeightEntryPointerOffset, 4u)) return;
 
@@ -167,6 +180,8 @@ void on_camera_orbit_inputs(Runtime &rt, Context &ctx) {
     if (resumed) {
         g_camera_pitch_offset = 0.0f;
         g_camera_last_height_entry = 0;
+        g_camera_follow_config = 0;
+        g_camera_follow_profile_valid = false;
     } else if (now > g_camera_last_update_us) {
         dt = std::clamp(static_cast<float>(now - g_camera_last_update_us) / 1'000'000.0f, 0.0f, 0.05f);
     }
@@ -189,10 +204,63 @@ void on_camera_orbit_inputs(Runtime &rt, Context &ctx) {
         dx /= magnitude;
         dy /= magnitude;
     }
+    // Normal follow mode uses five height presets (height_id 0..4). Capture the
+    // active area's current framing once, then make those five entries identical.
+    // The game may continue changing height_id internally, but its old up/down
+    // stages no longer move or zoom the camera. Collision min_height remains untouched.
+    const std::uint32_t height_entry = memory.load32(camera_data + kHeightEntryPointerOffset);
+    const std::uint32_t follow_config = memory.load32(camera_data + kFollowConfigPointerOffset);
+    const std::uint32_t follow_entries = follow_config + kFollowEntriesOffset;
+    const std::uint32_t follow_entries_size = kFollowEntryCount * kFollowEntryStride;
+    const bool follow_table_valid = follow_config != 0 && memory.contains(follow_config, 0xC0u) &&
+                                    follow_entries >= follow_config &&
+                                    memory.contains(follow_entries, follow_entries_size);
+    const bool height_entry_in_table = follow_table_valid && height_entry >= follow_entries &&
+                                       height_entry < follow_entries + follow_entries_size &&
+                                       ((height_entry - follow_entries) % kFollowEntryStride) == 0u &&
+                                       memory.contains(height_entry + 4u, 16u);
+    bool profile_changed = false;
+    if (height_entry_in_table &&
+        (!g_camera_follow_profile_valid || g_camera_follow_config != follow_config)) {
+        const float profile_y = std::bit_cast<float>(memory.load32(height_entry + 4u));
+        const float profile_z = std::bit_cast<float>(memory.load32(height_entry + 8u));
+        const float profile_height = std::bit_cast<float>(
+            memory.load32(height_entry + kHeightEntryHeightOffset));
+        const float profile_fov = std::bit_cast<float>(memory.load32(camera_data + kGoalFovOffset));
+        if (std::isfinite(profile_y) && std::isfinite(profile_z) &&
+            std::isfinite(profile_height) && std::isfinite(profile_fov) &&
+            std::fabs(profile_y) < 10000.0f && std::fabs(profile_z) < 10000.0f &&
+            std::fabs(profile_height) < 10000.0f && profile_fov > 0.0f && profile_fov < 3.2f) {
+            g_camera_follow_config = follow_config;
+            g_camera_follow_y_offset = profile_y;
+            g_camera_follow_z_offset = profile_z;
+            g_camera_follow_height = profile_height;
+            g_camera_follow_fov = profile_fov;
+            g_camera_follow_profile_valid = true;
+            profile_changed = true;
+        }
+    }
+
+    if (height_entry_in_table && g_camera_follow_profile_valid &&
+        g_camera_follow_config == follow_config) {
+        // Apply the same continuous-orbit base to every preset. The min-height field
+        // at +0x18 is intentionally preserved for each entry's terrain clearance.
+        if (profile_changed) {
+            for (std::uint32_t i = 0; i < kFollowEntryCount; ++i) {
+                const std::uint32_t entry = follow_entries + i * kFollowEntryStride;
+                memory.store32(entry + 4u, std::bit_cast<std::uint32_t>(g_camera_follow_y_offset));
+                memory.store32(entry + 8u, std::bit_cast<std::uint32_t>(g_camera_follow_z_offset));
+                memory.store32(entry + kHeightEntryHeightOffset,
+                               std::bit_cast<std::uint32_t>(g_camera_follow_height));
+            }
+        }
+        memory.store32(camera_data + kGoalFovOffset,
+                       std::bit_cast<std::uint32_t>(g_camera_follow_fov));
+    }
+
     // The stock orbit has a zero X/pitch angle. Keep our own absolute pitch while the
     // normal follow-height entry is stable, rather than adding it to a transient native
     // angle that can change during movement or camera recentering.
-    const std::uint32_t height_entry = memory.load32(camera_data + kHeightEntryPointerOffset);
     const bool stable_height_entry = height_entry != 0 && height_entry == g_camera_last_height_entry &&
                                      memory.contains(height_entry + 4u, 16u);
     float orbit_y = 0.0f;
