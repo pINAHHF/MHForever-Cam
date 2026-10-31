@@ -9,6 +9,7 @@ Everything is written under user_data/ (git-ignored). Then configure CMake with 
 usage: games/mhfu/tools/prepare.py --iso <image.iso> --exe <decrypted executable> --tools <build dir> [--region ULES01213]
 """
 import argparse
+import hashlib
 import os
 import subprocess
 import sys
@@ -25,6 +26,53 @@ def tool(build, name):
     sys.exit(f"error: {name} not found under {build}; build the tools first")
 
 
+
+def expected_executable_identity(region_dir):
+    """Read the plain executable's size and SHA-1 from the region identification file."""
+    path = os.path.join(region_dir, "region.toml")
+    section = None
+    values = {}
+    with open(path, encoding="utf-8") as source:
+        for raw in source:
+            line = raw.split("#", 1)[0].strip()
+            if not line:
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                section = line[1:-1].strip()
+                continue
+            if section == "dev_executable" and "=" in line:
+                key, value = (part.strip() for part in line.split("=", 1))
+                values[key] = value.strip().strip('"')
+    try:
+        return int(values["size"], 0), values["sha1"].lower()
+    except (KeyError, ValueError):
+        sys.exit(f"error: region.toml has no valid [dev_executable] size/SHA-1: {path}")
+
+
+def verify_executable(exe_path, region_dir):
+    expected_size, expected_sha1 = expected_executable_identity(region_dir)
+    actual_size = os.path.getsize(exe_path)
+    if actual_size != expected_size:
+        sys.exit(f"error: executable size is {actual_size}, expected {expected_size} for this region; "
+                 "use the prepared executable from your own matching game copy")
+    digest = hashlib.sha1()
+    with open(exe_path, "rb") as executable:
+        for chunk in iter(lambda: executable.read(1024 * 1024), b""):
+            digest.update(chunk)
+    actual_sha1 = digest.hexdigest()
+    if actual_sha1 != expected_sha1:
+        sys.exit(f"error: executable SHA-1 is {actual_sha1}, expected {expected_sha1} for this region; "
+                 "the ISO/executable may be from another release or modified")
+
+
+def manifest_disc_id(manifest_path):
+    with open(manifest_path, encoding="utf-8") as manifest:
+        for raw in manifest:
+            line = raw.split("#", 1)[0].strip()
+            if line.startswith("disc_id") and "=" in line:
+                return line.split("=", 1)[1].strip().strip('"')
+    return ""
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--iso", required=True)
@@ -39,7 +87,17 @@ def main():
     generated = os.path.join(user_data, "generated", a.region)
     region_dir = os.path.join(ROOT, "games", "mhfu", "regions", a.region)
 
+    if not os.path.isfile(os.path.join(region_dir, "region.toml")):
+        sys.exit(f"error: unknown region {a.region}; no region.toml found")
+    verify_executable(a.exe, region_dir)
+
     subprocess.run([tool(a.tools, "mhfu_extract_overlays"), "--iso", a.iso, "--exe", a.exe, "--out", overlays], check=True)
+    manifest = os.path.join(overlays, "overlays.toml")
+    actual_region = manifest_disc_id(manifest)
+    if actual_region != a.region:
+        sys.exit(f"error: ISO DISC_ID is {actual_region or 'unknown'}, but --region is {a.region}; "
+                 "use the matching ISO and region")
+
     camera_supported = a.region in ("ULES01213", "ULUS10391")
     recomp_args = [tool(a.tools, "mhf_recomp"), "--elf", a.exe, "--out", generated, "--name", "mhfu", "--parts", a.parts,
                    "--overlays", os.path.join(overlays, "overlays.toml"),
