@@ -2,7 +2,6 @@
 param(
     [string]$Iso,
     [string]$Exe,
-    [ValidateRange(1, 64)]
     [int]$Jobs = 0,
     [switch]$Launch
 )
@@ -107,6 +106,7 @@ Adicione a sua cópia do jogo pelo launcher primeiro, ou informe o ELF preparado
 $Exe = (Resolve-Path -LiteralPath $Exe).Path
 
 if ($Jobs -eq 0) { $Jobs = [Math]::Min(8, [Environment]::ProcessorCount) }
+if ($Jobs -lt 1 -or $Jobs -gt 64) { Stop-WithMessage "Jobs deve estar entre 1 e 64." }
 
 Write-Host "MHFU camera build — North America ($Region v1.01)" -ForegroundColor Green
 Write-Host "ISO: $Iso"
