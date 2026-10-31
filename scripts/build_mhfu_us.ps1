@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [ValidateSet("ULUS10391", "ULES01213")]
     [string]$Region = "ULUS10391",
@@ -165,6 +165,6 @@ if ($Launch) {
     Write-Host "Iniciando o MHFU modificado..." -ForegroundColor Cyan
     & $GameExe --iso $Iso --exe $Exe --window
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "O jogo fechou com código $LASTEXITCODE." -ForegroundColor Yellow
+        Write-Host ("O jogo fechou com código {0}." -f $LASTEXITCODE) -ForegroundColor Yellow
     }
 }
