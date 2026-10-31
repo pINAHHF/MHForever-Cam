@@ -139,8 +139,15 @@ void on_camera_orbit_inputs(Runtime &rt, Context &ctx) {
         return;
     }
 
+    // A gap means the hunt camera stopped updating (village, menus or a new mission).
+    // Drop the prior mission's offset instead of carrying its final angle into the next hunt.
+    const bool resumed = g_camera_last_update_us == 0 || now < g_camera_last_update_us ||
+                         now - g_camera_last_update_us >= 250'000u;
     float dt = 1.0f / 30.0f;
-    if (g_camera_last_update_us != 0 && now > g_camera_last_update_us) {
+    if (resumed) {
+        g_camera_pitch_offset = 0.0f;
+        g_camera_yaw_offset = 0.0f;
+    } else if (now > g_camera_last_update_us) {
         dt = std::clamp(static_cast<float>(now - g_camera_last_update_us) / 1'000'000.0f, 0.0f, 0.05f);
     }
     g_camera_last_update_us = now;
