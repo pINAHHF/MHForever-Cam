@@ -27,7 +27,7 @@ constexpr std::uint32_t kSubCameraData = 0xA0u;
 constexpr std::uint32_t kSubCameraStride = 0x1A0u;
 constexpr std::uint32_t kSubCameraIsActive = 0x91u;
 constexpr std::uint32_t kSubCameraCurrentId = 0x92u;
-constexpr std::uint32_t kSubCameraState = 0x99u;
+constexpr std::uint32_t kSubCameraState = 0x9Cu;
 
 constexpr std::uint32_t kCameraHeightId = 0x14u;
 constexpr std::uint32_t kCameraButtons = 0xA70u;
@@ -472,6 +472,9 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
         memory.load8(std_data + kStdIsShoulderCam) != 0u ||
         static_cast<std::int8_t>(memory.load8(std_data + kStdGunTargetingState)) >= 0 ||
         memory.load8(std_data + kStdIsFastRotate) != 0u ||
+        memory.load8(std_data + kStdIsFalldown) != 0u ||
+        memory.load8(std_data + kStdIsKabegiwa) != 0u ||
+        memory.load8(std_data + kStdIsViewBlocked) != 0u ||
         memory.load8(std_data + kStdKabegiwaTimer) == 60u;
 
     // Do not leave the temporary camera profile, fixed height id or masked
