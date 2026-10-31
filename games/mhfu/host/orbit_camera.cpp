@@ -95,6 +95,7 @@ struct OrbitState {
     std::uint32_t camera{};
     std::uint32_t area{};
     std::uint32_t player{};
+    std::uint32_t follow_entry{};
     std::uint64_t last_update_us{};
     float yaw{};
     float elevation{};
@@ -319,6 +320,7 @@ bool capture_orbit(OrbitState &state, const psprecomp::GuestMemory &memory,
     state.camera = camera;
     state.area = area;
     state.player = player;
+    state.follow_entry = entry;
     state.distance = distance;
     state.elevation = std::clamp(std::atan2(offset_y, z_offset), kMinElevation, kMaxElevation);
     state.initial_elevation = state.elevation;
@@ -367,8 +369,14 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
         return;
     }
 
+    const std::uint8_t selected_height_id = memory.load8(camera + kCameraHeightId);
+    const std::uint32_t selected_height_index = selected_height_id == 0u
+        ? 4u : std::min<std::uint32_t>(selected_height_id - 1u, 4u);
+    const std::uint32_t selected_entry = area + kAreaHeightDefinition + kFollowEntriesOffset +
+                                         selected_height_index * kFollowEntryStride;
     if (!g_orbit.active || g_orbit.camera != camera ||
-        g_orbit.sub_camera != sub_camera || g_orbit.area != area || g_orbit.player != player) {
+        g_orbit.sub_camera != sub_camera || g_orbit.area != area ||
+        g_orbit.player != player || g_orbit.follow_entry != selected_entry) {
         if (!capture_orbit(g_orbit, memory, sub_camera, camera, area, player, std_data)) {
             fallback(runtime, context, original);
             return;
@@ -404,11 +412,11 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
     g_orbit.last_update_us = now;
 
     // The native camera routine is retained as the wall/ground/safety solver.
-    // Its five height stages and D-pad camera controls are disabled for this call:
-    // we temporarily expose one synthetic follow entry, then restore every input
-    // and profile byte immediately after the native wall/floor checks have run.
-    const std::uint32_t entry0 = area + kAreaHeightDefinition + kFollowEntriesOffset;
-    if (!memory.contains(entry0, kFollowEntryStride) ||
+    // D-pad stage changes are masked for this call. We temporarily rewrite only
+    // the currently selected follow entry with our orbit elevation, then restore
+    // that profile and every input byte after native collision handling.
+    const std::uint32_t orbit_entry = g_orbit.follow_entry;
+    if (!memory.contains(orbit_entry, kFollowEntryStride) ||
         !range_ok(memory, camera, kCameraHeightId, 1u) ||
         !range_ok(memory, std_data, kStdButtons, 4u) ||
         !range_ok(memory, std_data, kStdFollowEntry, 4u)) {
@@ -416,11 +424,10 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
         return;
     }
 
-    const std::uint32_t saved_entry_y = memory.load32(entry0 + kFollowEntryYOffset);
-    const std::uint32_t saved_entry_z = memory.load32(entry0 + kFollowEntryZOffset);
-    const std::uint32_t saved_entry_height = memory.load32(entry0 + kFollowEntryHeight);
-    const std::uint32_t saved_entry_min_height = memory.load32(entry0 + kFollowEntryMinHeight);
-    const std::uint8_t saved_height_id = memory.load8(camera + kCameraHeightId);
+    const std::uint32_t saved_entry_y = memory.load32(orbit_entry + kFollowEntryYOffset);
+    const std::uint32_t saved_entry_z = memory.load32(orbit_entry + kFollowEntryZOffset);
+    const std::uint32_t saved_entry_height = memory.load32(orbit_entry + kFollowEntryHeight);
+    const std::uint32_t saved_entry_min_height = memory.load32(orbit_entry + kFollowEntryMinHeight);
     const std::uint16_t saved_camera_buttons = memory.load16(camera + kCameraButtons);
     const std::uint16_t saved_camera_rising_edge = memory.load16(camera + kCameraRisingEdge);
     const std::uint16_t saved_buttons = memory.load16(std_data + kStdButtons);
@@ -434,13 +441,12 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
         return;
     }
 
-    store_float(memory, entry0 + kFollowEntryYOffset, camera_y_offset);
-    store_float(memory, entry0 + kFollowEntryZOffset, camera_z_offset);
-    store_float(memory, entry0 + kFollowEntryHeight, g_orbit.target_height);
-    store_float(memory, entry0 + kFollowEntryMinHeight, g_orbit.min_height);
+    store_float(memory, orbit_entry + kFollowEntryYOffset, camera_y_offset);
+    store_float(memory, orbit_entry + kFollowEntryZOffset, camera_z_offset);
+    store_float(memory, orbit_entry + kFollowEntryHeight, g_orbit.target_height);
+    store_float(memory, orbit_entry + kFollowEntryMinHeight, g_orbit.min_height);
 
     const std::uint16_t yaw_units = angle_to_units(g_orbit.yaw);
-    memory.store8(camera + kCameraHeightId, 1u);
     // std_cam_sw_set_sub() copies these Camera-level fields into StdCameraData.
     // Mask them only for the native camera call; the player's ordinary action
     // inputs live in Player.buttons and remain untouched.
@@ -471,11 +477,10 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
     // Do not leave the temporary camera profile, fixed height id or masked
     // controls in guest memory. The next frame rebuilds the orbit profile from
     // the independent host-side yaw/elevation state.
-    memory.store32(entry0 + kFollowEntryYOffset, saved_entry_y);
-    memory.store32(entry0 + kFollowEntryZOffset, saved_entry_z);
-    memory.store32(entry0 + kFollowEntryHeight, saved_entry_height);
-    memory.store32(entry0 + kFollowEntryMinHeight, saved_entry_min_height);
-    memory.store8(camera + kCameraHeightId, saved_height_id);
+    memory.store32(orbit_entry + kFollowEntryYOffset, saved_entry_y);
+    memory.store32(orbit_entry + kFollowEntryZOffset, saved_entry_z);
+    memory.store32(orbit_entry + kFollowEntryHeight, saved_entry_height);
+    memory.store32(orbit_entry + kFollowEntryMinHeight, saved_entry_min_height);
     memory.store16(camera + kCameraButtons, saved_camera_buttons);
     memory.store16(camera + kCameraRisingEdge, saved_camera_rising_edge);
     memory.store16(std_data + kStdButtons, saved_buttons);
