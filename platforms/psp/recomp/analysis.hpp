@@ -54,6 +54,8 @@ struct ProgramInput {
     std::vector<std::uint32_t> weak_entries;
     // Addresses whose functions call a named host hook on entry (games/<id>/regions/<id>/symbols.toml).
     std::map<std::uint32_t, std::string> hooks;
+    // Instruction addresses that call a named host hook immediately before that guest instruction.
+    std::map<std::uint32_t, std::string> pc_hooks;
 };
 
 struct Analysis {
