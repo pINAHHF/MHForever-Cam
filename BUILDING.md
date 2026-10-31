@@ -45,17 +45,13 @@ cmake --install build/linux-clang --prefix ~/.local
 This uses your own copy of the game and never produces anything that may be committed or shared
 (see `CONTRIBUTING.md`).
 
-On Windows, the fork includes a helper for the North American v1.01 build. From a **Developer PowerShell for VS 2022**
-in the repository folder, run:
+On Windows, the fork includes a helper for the North American v1.01 and European builds. Open **x64 Native Tools Command Prompt for VS 2022** (installed with Build Tools), navigate to the repository folder, and run PowerShell from that prompt:
 
 ```powershell
-.\scripts\build_mhfu_us.ps1 -Iso "D:\Games\MHFU.iso"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_mhfu_us.ps1 -Region ULUS10391
 ```
 
-When the launcher has kept the image at `%APPDATA%\MHForever\games\ULUS10391\image.iso`, `-Iso` may be omitted.
-The helper locates the launcher's prepared `executable.elf`, builds the recompiler tools, generates the game code locally,
-and builds `mhfu-us.exe`. Pass `-Launch` to start it after a successful build. The ISO, executable and generated sources
-remain on the player's machine.
+Use `-Region ULES01213` for the European release. The default is North America (`ULUS10391`). Add `-Iso "D:\Games\MHFU.iso"` when the ISO is not stored by the MHForever launcher in `%APPDATA%\MHForever\games\<DISC_ID>\image.iso`. The helper locates the launcher's prepared `executable.elf`, builds the recompiler tools, generates the game code locally, and builds the matching game executable (`mhfu-us.exe` for North America or `mhfu.exe` for Europe). Pass `-Launch` to start it after a successful build. The ISO, executable and generated sources remain on the player's machine.
 
 1. Keep your ISO at hand. Players get the game's executable prepared by the launcher's installer (`MHForever --install <your.iso>`,
    see `docs/07-launcher-ux.md` §3b); developers can instead point the tools at a prepared executable (`docs/06-mhfu-module.md` §3).
