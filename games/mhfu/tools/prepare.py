@@ -40,9 +40,19 @@ def main():
     region_dir = os.path.join(ROOT, "games", "mhfu", "regions", a.region)
 
     subprocess.run([tool(a.tools, "mhfu_extract_overlays"), "--iso", a.iso, "--exe", a.exe, "--out", overlays], check=True)
-    subprocess.run([tool(a.tools, "mhf_recomp"), "--elf", a.exe, "--out", generated, "--name", "mhfu", "--parts", a.parts,
-                    "--overlays", os.path.join(overlays, "overlays.toml"),
-                    "--symbols", os.path.join(region_dir, "symbols.toml"), "--hook", "mh_overlay_prepare"], check=True)
+    camera_supported = a.region in ("ULES01213", "ULUS10391")
+    recomp_args = [tool(a.tools, "mhf_recomp"), "--elf", a.exe, "--out", generated, "--name", "mhfu", "--parts", a.parts,
+                   "--overlays", os.path.join(overlays, "overlays.toml"),
+                   "--symbols", os.path.join(region_dir, "symbols.toml"), "--hook", "mh_overlay_prepare"]
+    if camera_supported:
+        recomp_args.extend(["--entry", "mh_camera_orbit_update", "--hook-pc", "mh_camera_orbit_inputs"])
+    subprocess.run(recomp_args, check=True)
+
+    # The host keeps the legacy digital fallback for regions that do not yet have a verified camera hook.
+    os.makedirs(generated, exist_ok=True)
+    with open(os.path.join(generated, "mhfu_camera_support.hpp"), "w", encoding="utf-8") as header:
+        header.write("#pragma once\n")
+        header.write(f"#define MHF_MHFU_HAS_ANALOG_CAMERA {1 if camera_supported else 0}\n")
     print(f"\nGenerated code: {generated}\nConfigure with: cmake --preset <preset> -DMHF_MHFU_GENERATED={generated}")
 
 
