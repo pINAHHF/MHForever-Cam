@@ -56,6 +56,7 @@ using mhf::psp::Runtime;
 bool g_log_overlays = true;
 std::uint64_t g_camera_last_update_us{};
 float g_camera_pitch_offset{};
+std::uint32_t g_camera_last_height_entry{};
 
 // Scripted input for unattended runs: "12.5:cross,15:start" presses each button for 150 ms at that time;
 // "20:sup/3" holds the analog stick up (sup, sdown, sleft, sright) or a button for 3 seconds.
@@ -121,6 +122,9 @@ void on_camera_orbit_inputs(Runtime &rt, Context &ctx) {
     constexpr std::uint32_t kPitchOffset = 0x17Cu; // radians: X component passed to cpRotMatrix
     constexpr std::uint32_t kYawOffset = 0x180u;   // radians: Y component passed to cpRotMatrix
     constexpr std::uint32_t kGoalRotationOffset = 0x80u; // StdCameraData::goal_rotation (s16)
+    constexpr std::uint32_t kPositionYOffset = 0x04u;
+    constexpr std::uint32_t kGoalPositionYOffset = 0x44u;
+    constexpr std::uint32_t kHeightEntryPointerOffset = 0x70u;
     constexpr float kDeadzone = 0.16f;
     constexpr float kYawRadiansPerSecond = 2.6f;
     constexpr float kPitchRadiansPerSecond = 2.6f;
@@ -131,7 +135,10 @@ void on_camera_orbit_inputs(Runtime &rt, Context &ctx) {
     const std::uint32_t stack = ctx.gpr[29];
     const std::uint32_t camera_data = ctx.gpr[20]; // StdCameraData*: d->rotation was loaded from +0x82 above
     if (!memory.contains(stack + kPitchOffset, 8u) ||
-        !memory.contains(camera_data + kGoalRotationOffset, 4u)) return;
+        !memory.contains(camera_data + kGoalRotationOffset, 4u) ||
+        !memory.contains(camera_data + kGoalPositionYOffset, 4u) ||
+        !memory.contains(camera_data + kPositionYOffset, 4u) ||
+        !memory.contains(camera_data + kHeightEntryPointerOffset, 4u)) return;
 
     const std::uint64_t now = rt.now_us();
     rt.note_analog_camera_update(now);
@@ -156,6 +163,7 @@ void on_camera_orbit_inputs(Runtime &rt, Context &ctx) {
     float dt = 1.0f / 30.0f;
     if (resumed) {
         g_camera_pitch_offset = 0.0f;
+        g_camera_last_height_entry = 0;
     } else if (now > g_camera_last_update_us) {
         dt = std::clamp(static_cast<float>(now - g_camera_last_update_us) / 1'000'000.0f, 0.0f, 0.05f);
     }
@@ -163,13 +171,23 @@ void on_camera_orbit_inputs(Runtime &rt, Context &ctx) {
 
     const float x = std::clamp(pad.rx, -1.0f, 1.0f);
     const float y = std::clamp(pad.ry, -1.0f, 1.0f);
-    const float magnitude = std::sqrt(x * x + y * y);
-    if (magnitude > kDeadzone && dt > 0.0f) {
-        // Radial deadzone keeps diagonal movement from becoming faster than either single axis.
-        const float clamped_magnitude = std::min(magnitude, 1.0f);
-        const float response = (clamped_magnitude - kDeadzone) / (magnitude * (1.0f - kDeadzone));
-        const float dx = x * response;
-        const float dy = y * response;
+    // Shape each axis independently before normalizing the pair. With a radial deadzone,
+    // a small horizontal stick offset becomes active whenever the vertical axis is pushed far
+    // enough; that makes a pure up/down command appear to rotate yaw as well.
+    const auto shape_axis = [](float value) {
+        const float magnitude = std::fabs(value);
+        if (magnitude <= kDeadzone) return 0.0f;
+        return std::copysign((magnitude - kDeadzone) / (1.0f - kDeadzone), value);
+    };
+    float dx = shape_axis(x);
+    float dy = shape_axis(y);
+    const float magnitude = std::sqrt(dx * dx + dy * dy);
+    if (magnitude > 1.0f) {
+        dx /= magnitude;
+        dy /= magnitude;
+    }
+    if ((dx != 0.0f || dy != 0.0f) && dt > 0.0f) {
+        // Single-axis response is unchanged. Diagonal input is normalized so neither axis gains speed.
 
         // PSP's camera rotation increases when the D-pad moves left. A rightward stick movement
         // therefore subtracts from the game's 16-bit yaw. Update both goal and current rotation by
@@ -191,8 +209,35 @@ void on_camera_orbit_inputs(Runtime &rt, Context &ctx) {
 
         // SDL reports positive Y when the stick is pushed down. A negative pitch delta makes
         // pushing up raise the view, while pitch remains independent from the horizontal yaw.
+        const float previous_pitch_offset = g_camera_pitch_offset;
         g_camera_pitch_offset = std::clamp(g_camera_pitch_offset - dy * kPitchRadiansPerSecond * dt,
                                            -kMaxPitchOffset, kMaxPitchOffset);
+
+        // The stock follow camera eases its vertical position by only 12.5% per frame. Seed
+        // that interpolation with the previous orbit goal plus the pitch-only displacement,
+        // so analog pitch is not filtered eight times slower than yaw. The game's collision
+        // and floor checks still run afterwards and remain authoritative.
+        const std::uint32_t height_entry = memory.load32(camera_data + kHeightEntryPointerOffset);
+        if (height_entry != 0 && height_entry == g_camera_last_height_entry &&
+            memory.contains(height_entry + 4u, 8u) &&
+            std::fabs(g_camera_pitch_offset - previous_pitch_offset) > 0.000001f) {
+            const float orbit_y = std::bit_cast<float>(memory.load32(height_entry + 4u));
+            const float orbit_z = std::bit_cast<float>(memory.load32(height_entry + 8u));
+            const float old_pitch_y = std::cos(previous_pitch_offset) * orbit_y -
+                                      std::sin(previous_pitch_offset) * orbit_z;
+            const float new_pitch_y = std::cos(g_camera_pitch_offset) * orbit_y -
+                                      std::sin(g_camera_pitch_offset) * orbit_z;
+            const float previous_goal_y = std::bit_cast<float>(
+                memory.load32(camera_data + kGoalPositionYOffset));
+            const float compensated_y = previous_goal_y + (new_pitch_y - old_pitch_y);
+            if (std::isfinite(orbit_y) && std::isfinite(orbit_z) &&
+                std::isfinite(previous_goal_y) && std::isfinite(compensated_y) &&
+                std::fabs(compensated_y) < 100000.0f) {
+                memory.store32(camera_data + kPositionYOffset,
+                               std::bit_cast<std::uint32_t>(compensated_y));
+            }
+        }
+        g_camera_last_height_entry = height_entry;
     }
 
     memory.store32(stack + kPitchOffset,
