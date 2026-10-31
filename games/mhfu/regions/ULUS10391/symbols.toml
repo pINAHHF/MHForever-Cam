@@ -21,6 +21,7 @@ mh_camera_orbit_inputs  = 0x088878BC # matches the EU camera input site
 
 [data]
 mh_overlay_region_bases = 0x089CBB90 # u32[6], region base address per group
+mh_game_sys_singleton    = 0x089C7628 # MHP2G GameSys singleton slot plus the verified +0x120 US data-region displacement; runtime rejects an invalid pointer.
 
 [offsets]
 system_active_overlays  = 0x00F7A580 # u16[6] inside System, active DATA.BIN file id per group (0xFFFF = none); built by the same instructions as in EU
