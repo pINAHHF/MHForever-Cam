@@ -4,7 +4,8 @@
 
 [functions]
 mh_main                 = 0x08906934 # module entry point
-mh_camera_orbit_update  = 0x08886B68 # quest sub-camera orbit update; seeds the function containing the input site
+mh_camera_orbit_update  = 0x08886B68
+mh_camera_orbit_frame_finalize = 0x08815BD8 # Camera::cam2view; commit corrected orbit after sub-camera constraints # quest sub-camera orbit update; seeds the function containing the input site
 
 # Overlay manager (docs/04-recompiler.md §4.4). Groups: 0 eboot, 1 task, 2 sub, 3 em, 4 stage, 5 debug.
 mh_overlay_request      = 0x08890144 # (System*, file_id, group): starts an async read of DATA.BIN file `file_id` into the group's region
