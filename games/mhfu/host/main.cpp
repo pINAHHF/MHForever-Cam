@@ -383,30 +383,33 @@ void on_camera_orbit_frame_finalize(Runtime &rt, Context &ctx) {
         memory.load8(std_data + kIsKabegiwaOffset) != 0u) return;
 
     const float position_y = std::bit_cast<float>(memory.load32(std_data + kStdPositionYOffset));
-    const float target_y = std::bit_cast<float>(memory.load32(std_data + kStdTargetYOffset));
+    const float target_x = std::bit_cast<float>(memory.load32(std_data + 0x10u));
+    const float target_y = std::bit_cast<float>(memory.load32(std_data + kStdTargetYOffset - 0x40u));
+    const float target_z = std::bit_cast<float>(memory.load32(std_data + 0x18u));
     const float goal_position_y = std::bit_cast<float>(memory.load32(std_data + kStdGoalPositionYOffset));
     const float goal_target_y = std::bit_cast<float>(memory.load32(std_data + kStdGoalTargetYOffset));
     const float output_position_y = std::bit_cast<float>(memory.load32(sub_camera + kStdPositionYOffset));
-    const float output_target_y = std::bit_cast<float>(memory.load32(sub_camera + kStdTargetYOffset));
 
-    if (!std::isfinite(position_y) || !std::isfinite(target_y) ||
-        !std::isfinite(goal_position_y) || !std::isfinite(goal_target_y) ||
-        !std::isfinite(output_position_y) || !std::isfinite(output_target_y) ||
-        std::fabs(goal_position_y) > 100000.0f || std::fabs(goal_target_y) > 100000.0f) return;
+    if (!std::isfinite(position_y) || !std::isfinite(target_x) || !std::isfinite(target_y) ||
+        !std::isfinite(target_z) || !std::isfinite(goal_position_y) || !std::isfinite(goal_target_y) ||
+        !std::isfinite(output_position_y) ||
+        std::fabs(goal_position_y) > 100000.0f || std::fabs(goal_target_y) > 100000.0f ||
+        std::fabs(target_x) > 100000.0f || std::fabs(target_z) > 100000.0f) return;
 
     // Use the current frame's collision-adjusted orbit goal directly instead of easing toward it
     // by 12.5%. Restore the follow target's actual goal height instead of the stock pitch clamp.
     const float position_delta = goal_position_y - position_y;
-    const float target_delta = goal_target_y - target_y;
     memory.store32(std_data + kStdPositionYOffset, std::bit_cast<std::uint32_t>(goal_position_y));
     memory.store32(std_data + kStdTargetYOffset, std::bit_cast<std::uint32_t>(goal_target_y));
 
     // cam_sub_std has already added its camera bob to current_position. Apply only the difference
-    // so the bob remains intact; target x/z and wall adjustments are also retained.
+    // so the bob remains intact. Restore target X/Z from the wall-tested StdCameraData target to undo
+    // Pl_OoS_Adj's automatic head-avoidance tilt while retaining the native wall adjustment.
     memory.store32(sub_camera + kStdPositionYOffset,
                    std::bit_cast<std::uint32_t>(output_position_y + position_delta));
-    memory.store32(sub_camera + kStdTargetYOffset,
-                   std::bit_cast<std::uint32_t>(output_target_y + target_delta));
+    memory.store32(sub_camera + 0x10u, std::bit_cast<std::uint32_t>(target_x));
+    memory.store32(sub_camera + kStdTargetYOffset, std::bit_cast<std::uint32_t>(goal_target_y));
+    memory.store32(sub_camera + 0x18u, std::bit_cast<std::uint32_t>(target_z));
 }
 
 // The disc's product code ("ULES01213") from its PARAM.SFO, which ad hoc servers use to group the players of one game.
