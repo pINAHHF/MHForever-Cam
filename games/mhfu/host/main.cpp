@@ -55,7 +55,6 @@ using mhf::psp::Runtime;
 
 bool g_log_overlays = true;
 std::uint64_t g_camera_last_update_us{};
-std::uint32_t g_camera_std_data{};
 float g_camera_pitch_offset{};
 std::uint32_t g_camera_last_height_entry{};
 std::uint32_t g_camera_follow_config{};
@@ -157,7 +156,6 @@ void on_camera_orbit_inputs(Runtime &rt, Context &ctx) {
         !memory.contains(camera_data + kPositionYOffset, 4u) ||
         !memory.contains(camera_data + kHeightEntryPointerOffset, 4u)) return;
 
-    g_camera_std_data = camera_data;
     const std::uint64_t now = rt.now_us();
     rt.note_analog_camera_update(now);
     const auto &pad = mhf::psp::controller_state(rt);
@@ -344,74 +342,6 @@ void on_camera_orbit_inputs(Runtime &rt, Context &ctx) {
     memory.store32(stack + kYawOffset, std::bit_cast<std::uint32_t>(yaw));
 }
 
-// cam2view runs immediately after CameraMove has updated every sub-camera. At this point the stock
-// follow routine has already applied its vertical easing, target-height correction and Pl_OoS_Adj.
-// Commit the analog orbit after those corrections, but before cam2view copies the standard sub-camera
-// into the final Camera position/target. This keeps the stock wall/floor-tested orbit as our base while
-// removing the last layers that were pulling vertical motion back toward the preset angles.
-void on_camera_orbit_frame_finalize(Runtime &rt, Context &ctx) {
-    constexpr std::uint32_t kCameraStdDataOffset = 0x150u; // Camera::subCameras[STD].data
-    constexpr std::uint32_t kSubCameraBaseOffset = 0x0B0u;
-    constexpr std::uint32_t kSubCameraDataOffset = 0x0A0u;
-    constexpr std::uint32_t kStdPositionYOffset = 0x04u;
-    constexpr std::uint32_t kStdTargetYOffset = 0x14u;
-    constexpr std::uint32_t kStdGoalPositionYOffset = 0x44u;
-    constexpr std::uint32_t kStdGoalTargetYOffset = 0x54u;
-    constexpr std::uint32_t kIsFalldownOffset = 0x35u;
-    constexpr std::uint32_t kIsViewBlockedOffset = 0x89u;
-    constexpr std::uint32_t kIsKabegiwaOffset = 0x8Cu;
-
-    if (g_camera_std_data == 0 || !g_camera_follow_profile_valid || g_camera_last_update_us == 0) return;
-    const std::uint64_t now = rt.now_us();
-    if (now < g_camera_last_update_us || now - g_camera_last_update_us >= 100'000u) return;
-
-    const std::uint32_t camera = ctx.gpr[4]; // Camera::cam2view(this)
-    if (camera > 0xFFFFFFFFu - kCameraStdDataOffset ||
-        camera + kCameraStdDataOffset != g_camera_std_data) return;
-
-    auto &memory = rt.memory();
-    const std::uint32_t std_data = g_camera_std_data;
-    const std::uint32_t sub_camera = camera + kSubCameraBaseOffset;
-    if (std_data < kSubCameraDataOffset ||
-        !memory.contains(std_data, 0x94u) ||
-        !memory.contains(sub_camera, 0x20u)) return;
-
-    // Keep special traversal and genuine occlusion handling native. In ordinary open-space orbit,
-    // goal_position/goal_target already include the game's wall and ground clearance calculations.
-    if (memory.load8(std_data + kIsFalldownOffset) != 0u ||
-        memory.load8(std_data + kIsViewBlockedOffset) != 0u ||
-        memory.load8(std_data + kIsKabegiwaOffset) != 0u) return;
-
-    const float position_y = std::bit_cast<float>(memory.load32(std_data + kStdPositionYOffset));
-    const float target_x = std::bit_cast<float>(memory.load32(std_data + 0x10u));
-    const float target_y = std::bit_cast<float>(memory.load32(std_data + kStdTargetYOffset));
-    const float target_z = std::bit_cast<float>(memory.load32(std_data + 0x18u));
-    const float goal_position_y = std::bit_cast<float>(memory.load32(std_data + kStdGoalPositionYOffset));
-    const float goal_target_y = std::bit_cast<float>(memory.load32(std_data + kStdGoalTargetYOffset));
-    const float output_position_y = std::bit_cast<float>(memory.load32(sub_camera + kStdPositionYOffset));
-
-    if (!std::isfinite(position_y) || !std::isfinite(target_x) || !std::isfinite(target_y) ||
-        !std::isfinite(target_z) || !std::isfinite(goal_position_y) || !std::isfinite(goal_target_y) ||
-        !std::isfinite(output_position_y) ||
-        std::fabs(goal_position_y) > 100000.0f || std::fabs(goal_target_y) > 100000.0f ||
-        std::fabs(target_x) > 100000.0f || std::fabs(target_z) > 100000.0f) return;
-
-    // Use the current frame's collision-adjusted orbit goal directly instead of easing toward it
-    // by 12.5%. Restore the follow target's actual goal height instead of the stock pitch clamp.
-    const float position_delta = goal_position_y - position_y;
-    memory.store32(std_data + kStdPositionYOffset, std::bit_cast<std::uint32_t>(goal_position_y));
-    memory.store32(std_data + kStdTargetYOffset, std::bit_cast<std::uint32_t>(goal_target_y));
-
-    // cam_sub_std has already added its camera bob to current_position. Apply only the difference
-    // so the bob remains intact. Restore target X/Z from the wall-tested StdCameraData target to undo
-    // Pl_OoS_Adj's automatic head-avoidance tilt while retaining the native wall adjustment.
-    memory.store32(sub_camera + kStdPositionYOffset,
-                   std::bit_cast<std::uint32_t>(output_position_y + position_delta));
-    memory.store32(sub_camera + 0x10u, std::bit_cast<std::uint32_t>(target_x));
-    memory.store32(sub_camera + kStdTargetYOffset, std::bit_cast<std::uint32_t>(goal_target_y));
-    memory.store32(sub_camera + 0x18u, std::bit_cast<std::uint32_t>(target_z));
-}
-
 // The disc's product code ("ULES01213") from its PARAM.SFO, which ad hoc servers use to group the players of one game.
 std::string disc_product_code(const std::filesystem::path &disc_image) {
     try {
@@ -563,7 +493,6 @@ int main(int argc, char **argv) {
         }
         runtime.register_hook("mh_overlay_prepare", &on_overlay_prepare);
         runtime.register_hook("mh_camera_orbit_inputs", &on_camera_orbit_inputs);
-        runtime.register_hook("mh_camera_orbit_frame_finalize", &on_camera_orbit_frame_finalize);
         std::function<void()> extra;
         if (!dump_folder.empty() || seconds > 0 || !script.empty()) {
             if (!dump_folder.empty()) std::filesystem::create_directories(dump_folder);
