@@ -11,6 +11,7 @@
 // (launcher/native/install/); developer builds can also point --exe at a file that matches region.toml's dev_executable.
 
 #include "mhf/psp/frame_dump.hpp"
+#include "orbit_camera.hpp"
 #include "mhf/psp/generated.hpp"
 #include "mhf/psp/host.hpp"
 #include "mhf/psp/runtime.hpp"
@@ -54,15 +55,6 @@ using mhf::psp::Context;
 using mhf::psp::Runtime;
 
 bool g_log_overlays = true;
-std::uint64_t g_camera_last_update_us{};
-float g_camera_pitch_offset{};
-std::uint32_t g_camera_last_height_entry{};
-std::uint32_t g_camera_follow_config{};
-float g_camera_follow_y_offset{};
-float g_camera_follow_z_offset{};
-float g_camera_follow_height{};
-float g_camera_follow_fov{};
-bool g_camera_follow_profile_valid{};
 
 // Scripted input for unattended runs: "12.5:cross,15:start" presses each button for 150 ms at that time;
 // "20:sup/3" holds the analog stick up (sup, sdown, sleft, sright) or a button for 3 seconds.
@@ -119,227 +111,6 @@ void on_overlay_prepare(Runtime &rt, Context &ctx) {
     if (g_log_overlays || !ok) {
         std::fprintf(stderr, "[mhfu] overlay %d %s at %08X\n", overlay_id, ok ? "activated" : "UNKNOWN", image);
     }
-}
-
-// Called while CAM_ORBIT_FRAME::ANGLES is being built. Horizontal input is fed into the game's
-// own 16-bit goal/current rotation pair so its follow, recenter and inertia logic stays coherent.
-// Pitch has no continuous field in the original camera, so it is applied as a local X rotation to the orbit vector.
-void on_camera_orbit_inputs(Runtime &rt, Context &ctx) {
-    constexpr std::uint32_t kPitchOffset = 0x17Cu; // radians: X component passed to cpRotMatrix
-    constexpr std::uint32_t kYawOffset = 0x180u;   // radians: Y component passed to cpRotMatrix
-    constexpr std::uint32_t kGoalRotationOffset = 0x80u; // StdCameraData::goal_rotation (s16)
-    constexpr std::uint32_t kPositionYOffset = 0x04u;
-    constexpr std::uint32_t kGoalPositionYOffset = 0x44u;
-    constexpr std::uint32_t kGoalTargetYOffset = 0x54u;
-    constexpr std::uint32_t kGoalFovOffset = 0x64u;
-    constexpr std::uint32_t kFollowConfigPointerOffset = 0x6Cu;
-    constexpr std::uint32_t kHeightEntryPointerOffset = 0x70u;
-    constexpr std::uint32_t kHeightEntryHeightOffset = 0x10u;
-    constexpr std::uint32_t kFollowEntriesOffset = 0x20u;
-    constexpr std::uint32_t kFollowEntryStride = 0x20u;
-    constexpr std::uint32_t kFollowEntryCount = 5u;
-    constexpr float kDeadzone = 0.16f;
-    constexpr float kYawRadiansPerSecond = 2.6f;
-    constexpr float kPitchRadiansPerSecond = 4.2f;
-    constexpr float kMaxPitchOffset = 1.1f;
-    constexpr float kAngleUnitsPerRadian = 32768.0f / 3.14159265358979323846f;
-
-    auto &memory = rt.memory();
-    const std::uint32_t stack = ctx.gpr[29];
-    const std::uint32_t camera_data = ctx.gpr[20]; // StdCameraData*: d->rotation was loaded from +0x82 above
-    if (!memory.contains(stack + kPitchOffset, 8u) ||
-        !memory.contains(camera_data + kGoalRotationOffset, 4u) ||
-        !memory.contains(camera_data + kGoalPositionYOffset, 4u) ||
-        !memory.contains(camera_data + kGoalTargetYOffset, 4u) ||
-        !memory.contains(camera_data + kGoalFovOffset, 4u) ||
-        !memory.contains(camera_data + kFollowConfigPointerOffset, 4u) ||
-        !memory.contains(camera_data + kPositionYOffset, 4u) ||
-        !memory.contains(camera_data + kHeightEntryPointerOffset, 4u)) return;
-
-    const std::uint64_t now = rt.now_us();
-    rt.note_analog_camera_update(now);
-    const auto &pad = mhf::psp::controller_state(rt);
-
-    float pitch = std::bit_cast<float>(memory.load32(stack + kPitchOffset));
-    float yaw = std::bit_cast<float>(memory.load32(stack + kYawOffset));
-    if (!std::isfinite(pitch) || !std::isfinite(yaw)) return;
-
-    // L remains the game's native camera-recenter button.
-    if ((pad.buttons & mhf::psp::buttons::kLTrigger) != 0u) {
-        g_camera_pitch_offset = 0.0f;
-        g_camera_last_update_us = now;
-        memory.store32(stack + kPitchOffset, std::bit_cast<std::uint32_t>(pitch));
-        return;
-    }
-
-    // The hook is called every update of the hunt orbit camera. A long gap means we left that camera
-    // (village, menu, cutscene or a new mission), so do not carry its pitch into the next one.
-    const bool resumed = g_camera_last_update_us == 0 || now < g_camera_last_update_us ||
-                         now - g_camera_last_update_us >= 250'000u;
-    float dt = 1.0f / 30.0f;
-    if (resumed) {
-        g_camera_pitch_offset = 0.0f;
-        g_camera_last_height_entry = 0;
-        g_camera_follow_config = 0;
-        g_camera_follow_profile_valid = false;
-    } else if (now > g_camera_last_update_us) {
-        dt = std::clamp(static_cast<float>(now - g_camera_last_update_us) / 1'000'000.0f, 0.0f, 0.05f);
-    }
-    g_camera_last_update_us = now;
-
-    const float x = std::clamp(pad.rx, -1.0f, 1.0f);
-    const float y = std::clamp(pad.ry, -1.0f, 1.0f);
-    // Shape each axis independently before normalizing the pair. With a radial deadzone,
-    // a small horizontal stick offset becomes active whenever the vertical axis is pushed far
-    // enough; that makes a pure up/down command appear to rotate yaw as well.
-    const auto shape_axis = [](float value) {
-        const float magnitude = std::fabs(value);
-        if (magnitude <= kDeadzone) return 0.0f;
-        return std::copysign((magnitude - kDeadzone) / (1.0f - kDeadzone), value);
-    };
-    float dx = shape_axis(x);
-    float dy = shape_axis(y);
-    const float magnitude = std::sqrt(dx * dx + dy * dy);
-    if (magnitude > 1.0f) {
-        dx /= magnitude;
-        dy /= magnitude;
-    }
-    // Normal follow mode uses five height presets (height_id 0..4). Capture the
-    // active area's current framing once, then make those five entries identical.
-    // The game may continue changing height_id internally, but its old up/down
-    // stages no longer move or zoom the camera. Collision min_height remains untouched.
-    const std::uint32_t height_entry = memory.load32(camera_data + kHeightEntryPointerOffset);
-    const std::uint32_t follow_config = memory.load32(camera_data + kFollowConfigPointerOffset);
-    const std::uint32_t follow_entries = follow_config + kFollowEntriesOffset;
-    const std::uint32_t follow_entries_size = kFollowEntryCount * kFollowEntryStride;
-    const bool follow_table_valid = follow_config != 0 && memory.contains(follow_config, 0xC0u) &&
-                                    follow_entries >= follow_config &&
-                                    memory.contains(follow_entries, follow_entries_size);
-    const bool height_entry_in_table = follow_table_valid && height_entry >= follow_entries &&
-                                       height_entry < follow_entries + follow_entries_size &&
-                                       ((height_entry - follow_entries) % kFollowEntryStride) == 0u &&
-                                       memory.contains(height_entry + 4u, 16u);
-    bool profile_changed = false;
-    if (height_entry_in_table &&
-        (!g_camera_follow_profile_valid || g_camera_follow_config != follow_config)) {
-        const float profile_y = std::bit_cast<float>(memory.load32(height_entry + 4u));
-        const float profile_z = std::bit_cast<float>(memory.load32(height_entry + 8u));
-        const float profile_height = std::bit_cast<float>(
-            memory.load32(height_entry + kHeightEntryHeightOffset));
-        const float profile_fov = std::bit_cast<float>(memory.load32(camera_data + kGoalFovOffset));
-        if (std::isfinite(profile_y) && std::isfinite(profile_z) &&
-            std::isfinite(profile_height) && std::isfinite(profile_fov) &&
-            std::fabs(profile_y) < 10000.0f && std::fabs(profile_z) < 10000.0f &&
-            std::fabs(profile_height) < 10000.0f && profile_fov > 0.0f && profile_fov < 3.2f) {
-            g_camera_follow_config = follow_config;
-            g_camera_follow_y_offset = profile_y;
-            g_camera_follow_z_offset = profile_z;
-            g_camera_follow_height = profile_height;
-            g_camera_follow_fov = profile_fov;
-            g_camera_follow_profile_valid = true;
-            profile_changed = true;
-        }
-    }
-
-    if (height_entry_in_table && g_camera_follow_profile_valid &&
-        g_camera_follow_config == follow_config) {
-        // Apply the same continuous-orbit base to every preset. The min-height field
-        // at +0x18 is intentionally preserved for each entry's terrain clearance.
-        if (profile_changed) {
-            for (std::uint32_t i = 0; i < kFollowEntryCount; ++i) {
-                const std::uint32_t entry = follow_entries + i * kFollowEntryStride;
-                memory.store32(entry + 4u, std::bit_cast<std::uint32_t>(g_camera_follow_y_offset));
-                memory.store32(entry + 8u, std::bit_cast<std::uint32_t>(g_camera_follow_z_offset));
-                memory.store32(entry + kHeightEntryHeightOffset,
-                               std::bit_cast<std::uint32_t>(g_camera_follow_height));
-            }
-        }
-        memory.store32(camera_data + kGoalFovOffset,
-                       std::bit_cast<std::uint32_t>(g_camera_follow_fov));
-    }
-
-    // The stock orbit has a zero X/pitch angle. Keep our own absolute pitch while the
-    // normal follow-height entry is stable, rather than adding it to a transient native
-    // angle that can change during movement or camera recentering.
-    const bool stable_height_entry = height_entry != 0 && height_entry == g_camera_last_height_entry &&
-                                     memory.contains(height_entry + 4u, 16u);
-    float orbit_y = 0.0f;
-    float orbit_z = 0.0f;
-    float entry_height = 0.0f;
-    float previous_goal_y = 0.0f;
-    bool normal_orbit = false;
-    if (stable_height_entry) {
-        orbit_y = std::bit_cast<float>(memory.load32(height_entry + 4u));
-        orbit_z = std::bit_cast<float>(memory.load32(height_entry + 8u));
-        entry_height = std::bit_cast<float>(memory.load32(height_entry + kHeightEntryHeightOffset));
-        previous_goal_y = std::bit_cast<float>(memory.load32(camera_data + kGoalPositionYOffset));
-        const float previous_goal_target_y = std::bit_cast<float>(
-            memory.load32(camera_data + kGoalTargetYOffset));
-        const float old_pitch_y = std::cos(g_camera_pitch_offset) * orbit_y -
-                                  std::sin(g_camera_pitch_offset) * orbit_z;
-        const float camera_base_y = previous_goal_y - old_pitch_y;
-        const float target_base_y = previous_goal_target_y - entry_height;
-        normal_orbit = std::isfinite(orbit_y) && std::isfinite(orbit_z) &&
-                       std::isfinite(entry_height) && std::isfinite(previous_goal_y) &&
-                       std::isfinite(camera_base_y) && std::isfinite(target_base_y) &&
-                       std::fabs(camera_base_y - target_base_y) < 8.0f;
-    }
-
-    if ((dx != 0.0f || dy != 0.0f) && dt > 0.0f) {
-        // Single-axis response is unchanged. Diagonal input is normalized so neither axis gains speed.
-
-        // PSP's camera rotation increases when the D-pad moves left. A rightward stick movement
-        // therefore subtracts from the game's 16-bit yaw. Update both goal and current rotation by
-        // the same delta: the game's own smoothing/follow logic remains intact without fighting a
-        // second host-side yaw offset.
-        const std::int32_t yaw_delta = static_cast<std::int32_t>(
-            std::lround(-dx * kYawRadiansPerSecond * dt * kAngleUnitsPerRadian));
-        if (yaw_delta != 0) {
-            const std::uint32_t rotations = memory.load32(camera_data + kGoalRotationOffset);
-            const std::uint16_t goal = static_cast<std::uint16_t>(rotations & 0xFFFFu);
-            const std::uint16_t current = static_cast<std::uint16_t>(rotations >> 16u);
-            const std::uint16_t next_goal = static_cast<std::uint16_t>(static_cast<std::int32_t>(goal) + yaw_delta);
-            const std::uint16_t next_current = static_cast<std::uint16_t>(static_cast<std::int32_t>(current) + yaw_delta);
-            memory.store32(camera_data + kGoalRotationOffset,
-                           static_cast<std::uint32_t>(next_goal) | (static_cast<std::uint32_t>(next_current) << 16u));
-            // This frame's radians were prepared before the hook; keep them in step with the guest state.
-            yaw += static_cast<float>(yaw_delta) / kAngleUnitsPerRadian;
-        }
-
-        // This control scheme follows the game's camera convention: positive stick Y looks down,
-        // negative stick Y looks up. SDL's positive Y is physically down, so the sign is kept here.
-        const float previous_pitch_offset = g_camera_pitch_offset;
-        g_camera_pitch_offset = std::clamp(g_camera_pitch_offset + dy * kPitchRadiansPerSecond * dt,
-                                           -kMaxPitchOffset, kMaxPitchOffset);
-
-        // The stock follow camera eases its vertical position by only 12.5% per frame. Seed
-        // that interpolation with the previous orbit goal plus the pitch-only displacement,
-        // so analog pitch is not filtered eight times slower than yaw. The game's collision
-        // and floor checks still run afterwards and remain authoritative.
-        if (normal_orbit && std::fabs(g_camera_pitch_offset - previous_pitch_offset) > 0.000001f) {
-            const float old_pitch_y = std::cos(previous_pitch_offset) * orbit_y -
-                                      std::sin(previous_pitch_offset) * orbit_z;
-            const float new_pitch_y = std::cos(g_camera_pitch_offset) * orbit_y -
-                                      std::sin(g_camera_pitch_offset) * orbit_z;
-            const float compensated_y = previous_goal_y + (new_pitch_y - old_pitch_y);
-            if (std::isfinite(compensated_y) && std::fabs(compensated_y) < 100000.0f) {
-                memory.store32(camera_data + kPositionYOffset,
-                               std::bit_cast<std::uint32_t>(compensated_y));
-            }
-        }
-    }
-
-    // In the normal third-person orbit, native pitch is zero. Replacing it (rather than
-    // accumulating on top of it) prevents movement/recentering from leaking into the Y axis.
-    if (normal_orbit) {
-        pitch = g_camera_pitch_offset;
-    } else {
-        pitch += g_camera_pitch_offset;
-    }
-    g_camera_last_height_entry = height_entry;
-
-    memory.store32(stack + kPitchOffset, std::bit_cast<std::uint32_t>(pitch));
-    memory.store32(stack + kYawOffset, std::bit_cast<std::uint32_t>(yaw));
 }
 
 // The disc's product code ("ULES01213") from its PARAM.SFO, which ad hoc servers use to group the players of one game.
@@ -492,7 +263,7 @@ int main(int argc, char **argv) {
             runtime.add_overlay(*programs[i]);
         }
         runtime.register_hook("mh_overlay_prepare", &on_overlay_prepare);
-        runtime.register_hook("mh_camera_orbit_inputs", &on_camera_orbit_inputs);
+        register_mhfu_orbit_camera(runtime);
         std::function<void()> extra;
         if (!dump_folder.empty() || seconds > 0 || !script.empty()) {
             if (!dump_folder.empty()) std::filesystem::create_directories(dump_folder);
