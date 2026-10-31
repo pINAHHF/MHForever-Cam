@@ -32,7 +32,7 @@ namespace {
 void usage() {
     std::fprintf(stderr,
                  "usage: mhf_recomp --elf <file.elf> --out <dir> --name <identifier> [--parts N] [--nids nids.csv]\n"
-                 "                  [--overlays overlays.toml] [--symbols symbols.toml --hook <name>... --entry <name>... --hook-pc <name>...]\n"
+                 "                  [--overlays overlays.toml] [--symbols symbols.toml --hook <name>... --entry <name>... --replace <name>... --hook-pc <name>...]\n"
                  "                  [--list-imports]\n");
 }
 
@@ -150,6 +150,7 @@ int main(int argc, char **argv) {
     std::vector<std::string> hook_names;
     std::vector<std::string> entry_names;
     std::vector<std::string> pc_hook_names;
+    std::vector<std::string> replacement_names;
     std::string name;
     std::size_t parts = 8;
     bool list_imports = false;
@@ -173,6 +174,7 @@ int main(int argc, char **argv) {
         else if (arg == "--hook") hook_names.push_back(value());
         else if (arg == "--entry") entry_names.push_back(value());
         else if (arg == "--hook-pc") pc_hook_names.push_back(value());
+        else if (arg == "--replace") replacement_names.push_back(value());
         else {
             usage();
             return 2;
@@ -231,9 +233,9 @@ int main(int argc, char **argv) {
 
         // Hooks, explicit analysis entries and instruction hooks by canonical name
         // (games/<id>/regions/<id>/symbols.toml).
-        if (!hook_names.empty() || !entry_names.empty() || !pc_hook_names.empty()) {
+        if (!hook_names.empty() || !entry_names.empty() || !pc_hook_names.empty() || !replacement_names.empty()) {
             if (symbols_path.empty()) {
-                std::fprintf(stderr, "error: --hook/--entry/--hook-pc needs --symbols\n");
+                std::fprintf(stderr, "error: --hook/--entry/--replace/--hook-pc needs --symbols\n");
                 return 2;
             }
             const auto symbols = toml::parse_file(symbols_path);
@@ -255,6 +257,24 @@ int main(int argc, char **argv) {
                     return 1;
                 }
                 input.extra_entries.push_back(static_cast<std::uint32_t>(toml::to_integer(*value)));
+            }
+            for (const auto &replacement : replacement_names) {
+                const auto value = functions != symbols.tables.end()
+                                       ? toml::get(functions->second, replacement)
+                                       : std::nullopt;
+                if (!value) {
+                    std::fprintf(stderr, "error: replacement symbol %s not found in %s\n",
+                                 replacement.c_str(), symbols_path.string().c_str());
+                    return 1;
+                }
+                const auto address = static_cast<std::uint32_t>(toml::to_integer(*value));
+                if ((address & 3u) != 0 || !in_ranges(input.code, address)) {
+                    std::fprintf(stderr, "error: replacement %s at %08X is not an aligned instruction in this ELF\n",
+                                 replacement.c_str(), address);
+                    return 1;
+                }
+                input.replacements[address] = replacement;
+                input.extra_entries.push_back(address);
             }
             const auto hook_sites = symbols.tables.find("hook_sites");
             for (const auto &hook : pc_hook_names) {
@@ -284,6 +304,7 @@ int main(int argc, char **argv) {
             o.input.memory = &memory;
             o.input.imports = {};
             o.input.hooks = input.hooks;
+            o.input.replacements = input.replacements;
             o.input.pc_hooks = input.pc_hooks;
         }
         auto route = [&](std::uint32_t target, bool from_main) {
