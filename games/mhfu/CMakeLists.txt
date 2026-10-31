@@ -22,7 +22,7 @@ if(MHF_BUILD_TESTS)
 
     # Compile the real host with the analog-camera branch enabled, without game-derived generated code.
     # The game program itself is still built locally from the player's own ISO.
-    add_library(mhfu_host_camera_compile OBJECT host/main.cpp)
+    add_library(mhfu_host_camera_compile OBJECT host/main.cpp host/orbit_camera.cpp)
     target_include_directories(mhfu_host_camera_compile PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures)
     target_link_libraries(mhfu_host_camera_compile PRIVATE mhf_psp_runtime mhf_psp_tools mhf_core)
     if(TARGET mhf_psp_frontend)
@@ -59,7 +59,7 @@ if(MHF_MHFU_GENERATED)
     else()
         target_compile_options(mhfu_generated PRIVATE -w -O1)
     endif()
-    add_executable(mhfu host/main.cpp)
+    add_executable(mhfu host/main.cpp host/orbit_camera.cpp)
     # One program per region; the launcher picks it by the disc (launcher.cpp, game_program_name).
     set(MHF_MHFU_PROGRAM_NAME "mhfu" CACHE STRING "File name of the Freedom Unite program: mhfu (EU) or mhfu-us (NA)")
     set_target_properties(mhfu PROPERTIES OUTPUT_NAME ${MHF_MHFU_PROGRAM_NAME})
