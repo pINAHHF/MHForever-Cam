@@ -143,7 +143,16 @@ bool is_lobby_or_unknown(const psprecomp::GuestMemory &memory) {
     if (!memory.contains(slot, 4u)) return true;
     const std::uint32_t game_sys = memory.load32(slot);
     if (game_sys < 0x08800000u || game_sys >= 0x0A000000u ||
-        !range_ok(memory, game_sys, kGameSysFlags, 4u)) {
+        !range_ok(memory, game_sys, kGameSysFlags, 4u) ||
+        !range_ok(memory, game_sys, 0x28u, 1u) ||
+        !range_ok(memory, game_sys, 0x422u, 1u) ||
+        !range_ok(memory, game_sys, 0x480u, 1u)) {
+        return true;
+    }
+    // These independent fields make a false-positive singleton match very unlikely.
+    if (memory.load8(game_sys + 0x28u) >= 4u ||
+        memory.load8(game_sys + 0x422u) > 1u ||
+        memory.load8(game_sys + 0x480u) > 1u) {
         return true;
     }
     return (memory.load32(game_sys + kGameSysFlags) & kLobbyTaskFlag) != 0u;
@@ -196,13 +205,15 @@ bool special_player_state(const psprecomp::GuestMemory &memory, std::uint32_t pl
     if (!range_ok(memory, std_data, kStdIsFalldown, 1u) ||
         !range_ok(memory, std_data, kStdGunTargetingState, 1u) ||
         !range_ok(memory, std_data, kStdIsShoulderCam, 1u) ||
-        !range_ok(memory, std_data, kStdIsKabegiwa, 1u)) {
+        !range_ok(memory, std_data, kStdIsKabegiwa, 1u) ||
+        !range_ok(memory, std_data, kStdIsFastRotate, 1u)) {
         return true;
     }
 
     if (memory.load8(std_data + kStdIsFalldown) != 0u ||
         static_cast<std::int8_t>(memory.load8(std_data + kStdGunTargetingState)) >= 0 ||
-        memory.load8(std_data + kStdIsShoulderCam) != 0u) {
+        memory.load8(std_data + kStdIsShoulderCam) != 0u ||
+        memory.load8(std_data + kStdIsFastRotate) != 0u) {
         return true;
     }
 
@@ -432,6 +443,11 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
         original(runtime, context);
     }
 
+    // If native code deliberately changed the yaw after our input (for example
+    // its player-turn/auto-recenter branch), hand control back to the stock
+    // camera instead of letting the two controllers fight over subsequent frames.
+    const bool native_camera_override = memory.load16(std_data + kStdGoalRotation) != yaw_units;
+
     // Do not leave the temporary camera profile, fixed height id or masked
     // controls in guest memory. The next frame rebuilds the orbit profile from
     // the independent host-side yaw/elevation state.
@@ -443,6 +459,11 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
     memory.store16(std_data + kStdButtons, saved_buttons);
     memory.store16(std_data + kStdRisingEdge, saved_rising_edge);
     memory.store32(std_data + kStdFollowEntry, saved_follow_entry);
+
+    if (native_camera_override) {
+        g_orbit = {};
+        runtime.note_analog_camera_update(0u);
+    }
 }
 
 } // namespace
