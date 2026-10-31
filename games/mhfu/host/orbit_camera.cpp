@@ -210,6 +210,7 @@ bool special_player_state(const psprecomp::GuestMemory &memory, std::uint32_t pl
     }
 
     if (!range_ok(memory, std_data, kStdIsFalldown, 1u) ||
+        !range_ok(memory, std_data, kStdIsViewBlocked, 1u) ||
         !range_ok(memory, std_data, kStdGunTargetingState, 1u) ||
         !range_ok(memory, std_data, kStdIsShoulderCam, 1u) ||
         !range_ok(memory, std_data, kStdIsKabegiwa, 1u) ||
@@ -420,8 +421,7 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
     const std::uint32_t orbit_entry = g_orbit.follow_entry;
     if (!memory.contains(orbit_entry, kFollowEntryStride) ||
         !range_ok(memory, camera, kCameraHeightId, 1u) ||
-        !range_ok(memory, std_data, kStdButtons, 4u) ||
-        !range_ok(memory, std_data, kStdFollowEntry, 4u)) {
+        !range_ok(memory, std_data, kStdButtons, 4u)) {
         fallback(runtime, context, original);
         return;
     }
@@ -434,7 +434,6 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
     const std::uint16_t saved_camera_rising_edge = memory.load16(camera + kCameraRisingEdge);
     const std::uint16_t saved_buttons = memory.load16(std_data + kStdButtons);
     const std::uint16_t saved_rising_edge = memory.load16(std_data + kStdRisingEdge);
-    const std::uint32_t saved_follow_entry = memory.load32(std_data + kStdFollowEntry);
 
     const float camera_y_offset = g_orbit.target_height + g_orbit.distance * std::sin(g_orbit.elevation);
     const float camera_z_offset = g_orbit.distance * std::cos(g_orbit.elevation);
@@ -479,8 +478,9 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
         memory.load8(std_data + kStdIsViewBlocked) != 0u ||
         memory.load8(std_data + kStdKabegiwaTimer) != 0u;
 
-    // Do not leave the temporary camera profile, fixed height id or masked
-    // controls in guest memory. The next frame rebuilds the orbit profile from
+    // Do not leave the temporary camera profile or masked controls in guest
+    // memory. The native function keeps its valid pointer to the selected entry.
+    // The next frame rebuilds the orbit profile from
     // the independent host-side yaw/elevation state.
     memory.store32(orbit_entry + kFollowEntryYOffset, saved_entry_y);
     memory.store32(orbit_entry + kFollowEntryZOffset, saved_entry_z);
@@ -490,7 +490,6 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
     memory.store16(camera + kCameraRisingEdge, saved_camera_rising_edge);
     memory.store16(std_data + kStdButtons, saved_buttons);
     memory.store16(std_data + kStdRisingEdge, saved_rising_edge);
-    memory.store32(std_data + kStdFollowEntry, saved_follow_entry);
 
     if (native_camera_override) {
         g_orbit = {};
