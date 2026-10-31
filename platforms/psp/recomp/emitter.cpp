@@ -92,7 +92,7 @@ public:
         out_ << "    return;\n}\n\n";
         if (has_replacement) {
             out_ << "void " << function_name << "(Runtime &rt, Context &ctx) {\n"
-                 << "    static const ReplacementFunction replacement = abi::find_replacement(rt, \""
+                 << "    static const auto replacement = abi::find_replacement(rt, \""
                  << cpp_escape(replacement->second) << "\");\n"
                  << "    if (replacement != nullptr) { replacement(rt, ctx, &" << function_name
                  << "_original); return; }\n"
