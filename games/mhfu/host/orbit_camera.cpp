@@ -88,7 +88,6 @@ constexpr float kMinElevation = -1.15f;
 constexpr float kMaxElevation = 1.15f;
 constexpr float kMinOrbitDistance = 80.0f;
 constexpr float kMaxOrbitDistance = 1800.0f;
-constexpr std::uint64_t kCameraResumeGapUs = 250'000u;
 
 struct OrbitState {
     bool active{};
