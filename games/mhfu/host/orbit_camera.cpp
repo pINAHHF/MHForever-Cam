@@ -24,29 +24,20 @@ constexpr float kAngleUnitsPerRadian = 32768.0f / kPi;
 // passed as this ($a0). Camera::subCameras[0] begins at Camera + 0xB0.
 constexpr std::uint32_t kCameraFromSubCamera = 0xB0u;
 constexpr std::uint32_t kSubCameraData = 0xA0u;
-constexpr std::uint32_t kSubCameraStride = 0x190u;
+constexpr std::uint32_t kSubCameraStride = 0x1A0u;
 constexpr std::uint32_t kSubCameraIsActive = 0x91u;
 constexpr std::uint32_t kSubCameraCurrentId = 0x92u;
 constexpr std::uint32_t kSubCameraState = 0x99u;
 
 constexpr std::uint32_t kCameraHeightId = 0x14u;
 constexpr std::uint32_t kCameraWyvernFindPlayer = 0xA81u;
-constexpr std::uint32_t kCameraIsChangingArea = 0xA8Au;
-constexpr std::uint32_t kCameraLastSubCameraId = 0xA8Bu;
-constexpr std::uint32_t kCameraAreaSubCameraId = 0xA8Cu;
+constexpr std::uint32_t kCameraIsChangingArea = 0xA8Bu;
+constexpr std::uint32_t kCameraLastSubCameraId = 0xA8Cu;
+constexpr std::uint32_t kCameraAreaSubCameraId = 0xA8Du;
 constexpr std::uint32_t kCameraPlayer = 0xA84u;
 constexpr std::uint32_t kCameraAreaConfig = 0xA90u;
 
-constexpr std::uint32_t kStdPosition = 0x00u;
-constexpr std::uint32_t kStdTarget = 0x10u;
-constexpr std::uint32_t kStdGroundY = 0x30u;
 constexpr std::uint32_t kStdIsFalldown = 0x35u;
-constexpr std::uint32_t kStdGoalPosition = 0x40u;
-constexpr std::uint32_t kStdGoalTarget = 0x50u;
-constexpr std::uint32_t kStdFov = 0x60u;
-constexpr std::uint32_t kStdGoalFov = 0x64u;
-constexpr std::uint32_t kStdRoll = 0x68u;
-constexpr std::uint32_t kStdFollowConfig = 0x6Cu;
 constexpr std::uint32_t kStdFollowEntry = 0x70u;
 constexpr std::uint32_t kStdGoalRotation = 0x80u;
 constexpr std::uint32_t kStdButtons = 0x84u;
@@ -250,7 +241,7 @@ bool standard_camera_context(const psprecomp::GuestMemory &memory, std::uint32_t
 
     if (special_sub_camera_active(memory, camera)) return false;
 
-    const std::uint32_t active_sub_camera = memory.load32(camera + 0xDC4u);
+    const std::uint8_t active_sub_camera = memory.load8(camera + 0xDC4u);
     if (active_sub_camera == 3u || active_sub_camera == 4u || active_sub_camera == 5u) {
         return false;
     }
