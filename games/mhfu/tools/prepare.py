@@ -73,6 +73,24 @@ def manifest_disc_id(manifest_path):
                 return line.split("=", 1)[1].strip().strip('"')
     return ""
 
+
+def region_symbol(region_dir, section_name, symbol_name):
+    """Read one numeric symbol from a named TOML table in symbols.toml."""
+    section = None
+    with open(os.path.join(region_dir, "symbols.toml"), encoding="utf-8") as source:
+        for raw in source:
+            line = raw.split("#", 1)[0].strip()
+            if not line:
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                section = line[1:-1].strip()
+                continue
+            if section == section_name and "=" in line:
+                key, value = (part.strip() for part in line.split("=", 1))
+                if key == symbol_name:
+                    return int(value, 0)
+    sys.exit(f"error: missing [{section_name}].{symbol_name} in {region_dir}/symbols.toml")
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--iso", required=True)
@@ -99,11 +117,12 @@ def main():
                  "use the matching ISO and region")
 
     camera_supported = a.region in ("ULES01213", "ULUS10391")
+    game_sys_singleton = region_symbol(region_dir, "data", "mh_game_sys_singleton") if camera_supported else 0
     recomp_args = [tool(a.tools, "mhf_recomp"), "--elf", a.exe, "--out", generated, "--name", "mhfu", "--parts", a.parts,
                    "--overlays", os.path.join(overlays, "overlays.toml"),
                    "--symbols", os.path.join(region_dir, "symbols.toml"), "--hook", "mh_overlay_prepare"]
     if camera_supported:
-        recomp_args.extend(["--entry", "mh_camera_orbit_update", "--hook-pc", "mh_camera_orbit_inputs"])
+        recomp_args.extend(["--replace", "mh_camera_orbit_update"])
     subprocess.run(recomp_args, check=True)
 
     # The host keeps the legacy digital fallback for regions that do not yet have a verified camera hook.
@@ -111,6 +130,7 @@ def main():
     with open(os.path.join(generated, "mhfu_camera_support.hpp"), "w", encoding="utf-8") as header:
         header.write("#pragma once\n")
         header.write(f"#define MHF_MHFU_HAS_ANALOG_CAMERA {1 if camera_supported else 0}\n")
+        header.write(f"#define MHF_MHFU_GAME_SYS_SINGLETON 0x{game_sys_singleton:08X}u\n")
     print(f"\nGenerated code: {generated}\nConfigure with: cmake --preset <preset> -DMHF_MHFU_GENERATED={generated}")
 
 
