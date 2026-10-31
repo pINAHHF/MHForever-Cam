@@ -12,9 +12,25 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 namespace mhf::psp {
 namespace {
+
+bool camera_trace_enabled() {
+    static const bool enabled = std::getenv("MHF_CAMERA_LOG") != nullptr;
+    return enabled;
+}
+
+void camera_trace(const char *reason) {
+    if (!camera_trace_enabled()) return;
+    static char previous[192]{};
+    if (std::strcmp(previous, reason) == 0) return;
+    std::snprintf(previous, sizeof(previous), "%s", reason);
+    std::fprintf(stderr, "[mhfu-camera] %s\n", reason);
+}
 
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kTwoPi = 2.0f * kPi;
@@ -332,17 +348,19 @@ bool capture_orbit(OrbitState &state, const psprecomp::GuestMemory &memory,
     return true;
 }
 
-void fallback(Runtime &runtime, Context &context, GuestFunction original) {
+void fallback(Runtime &runtime, Context &context, GuestFunction original, const char *reason) {
+    camera_trace(reason);
     g_orbit = {};
     runtime.note_analog_camera_update(0u);
     if (original != nullptr) original(runtime, context);
 }
 
 void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction original) {
+    camera_trace("replacement reached: mh_camera_orbit_update");
     auto &memory = runtime.memory();
     const std::uint32_t sub_camera = context.gpr[4]; // SubCamera::this
     if (sub_camera < kCameraFromSubCamera) {
-        fallback(runtime, context, original);
+        fallback(runtime, context, original, "fallback: SubCamera pointer is below expected Camera offset");
         return;
     }
 
@@ -350,15 +368,18 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
     const std::uint32_t std_data = sub_camera + kSubCameraData;
     if (!range_ok(memory, std_data, kStdGoalRotation, 4u) ||
         !range_ok(memory, sub_camera, 0u, 0xA0u)) {
-        fallback(runtime, context, original);
+        fallback(runtime, context, original, "fallback: SubCamera/StdCameraData pointer is outside guest memory");
         return;
     }
 
     std::uint32_t area = 0u;
     std::uint32_t player = 0u;
-    if (!standard_camera_context(memory, sub_camera, camera, area, player) ||
-        special_player_state(memory, player, std_data)) {
-        fallback(runtime, context, original);
+    if (!standard_camera_context(memory, sub_camera, camera, area, player)) {
+        fallback(runtime, context, original, "fallback: standard camera context rejected (subcamera, area, player, lobby or singleton check)");
+        return;
+    }
+    if (special_player_state(memory, player, std_data)) {
+        fallback(runtime, context, original, "fallback: player/action state is marked special");
         return;
     }
 
@@ -367,7 +388,7 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
     if (!range_ok(memory, area, 0u, 0xE0u) ||
         !range_ok(memory, player, kPlayerRotationY, 2u) ||
         !range_ok(memory, area, 0x40u, 0x20u)) {
-        fallback(runtime, context, original);
+        fallback(runtime, context, original, "fallback: area/player structure range validation failed");
         return;
     }
 
@@ -380,7 +401,7 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
         g_orbit.sub_camera != sub_camera || g_orbit.area != area ||
         g_orbit.player != player || g_orbit.follow_entry != selected_entry) {
         if (!capture_orbit(g_orbit, memory, sub_camera, camera, area, player, std_data)) {
-            fallback(runtime, context, original);
+            fallback(runtime, context, original, "fallback: could not capture initial orbit profile (height/distance/rotation)");
             return;
         }
     }
@@ -393,6 +414,7 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
         g_orbit.last_update_us = 0u;
     }
 
+    camera_trace("orbit active: analog right-stick camera path accepted");
     runtime.note_analog_camera_update(now);
     const ControllerState &pad = controller_state(runtime);
     const float dx = shape_axis(pad.rx);
@@ -421,7 +443,7 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
     if (!memory.contains(orbit_entry, kFollowEntryStride) ||
         !range_ok(memory, camera, kCameraHeightId, 1u) ||
         !range_ok(memory, std_data, kStdButtons, 4u)) {
-        fallback(runtime, context, original);
+        fallback(runtime, context, original, "fallback: selected orbit entry or camera input fields are outside guest memory");
         return;
     }
 
@@ -437,7 +459,7 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
     const float camera_y_offset = g_orbit.target_height + g_orbit.distance * std::sin(g_orbit.elevation);
     const float camera_z_offset = g_orbit.distance * std::cos(g_orbit.elevation);
     if (!std::isfinite(camera_y_offset) || !std::isfinite(camera_z_offset)) {
-        fallback(runtime, context, original);
+        fallback(runtime, context, original, "fallback: computed orbit offset is not finite");
         return;
     }
 
