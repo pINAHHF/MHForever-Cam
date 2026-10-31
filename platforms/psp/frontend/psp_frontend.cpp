@@ -1442,7 +1442,8 @@ void Frontend::attach(Runtime &rt, std::function<void()> extra) {
                 set_controller_state(*runtime, ControllerState{}); // the menu has the input, the game runs on without it
                 step_menu(*impl, *runtime);
             } else {
-                set_controller_state(*runtime, map_input(pad, runtime->options().analog_camera_input));
+                set_controller_state(*runtime, map_input(
+                    pad, runtime->options().analog_camera_input && runtime->analog_camera_active()));
                 update_dialogs(*impl, *runtime);
                 watch_friends(*impl, *runtime);
                 if (pad.guide && !impl->guide_down) impl->menu_requested = true;
