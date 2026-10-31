@@ -140,8 +140,8 @@ private:
                 return;
             }
             if (const auto hook = input_.pc_hooks.find(pc); hook != input_.pc_hooks.end()) {
-                out_ << "    { static const HookFunction hook = abi::find_hook(rt, \"" << cpp_escape(hook->second) << "\");\\n"
-                     << "      if (hook != nullptr) hook(rt, ctx); }\\n";
+                out_ << "    { static const HookFunction hook = abi::find_hook(rt, \"" << cpp_escape(hook->second) << "\");\n"
+                     << "      if (hook != nullptr) hook(rt, ctx); }\n";
             }
             const auto d = decode(pc);
             if (!d.has_delay_slot() && d.kind != OpcodeKind::Jr && d.kind != OpcodeKind::Jalr) {
