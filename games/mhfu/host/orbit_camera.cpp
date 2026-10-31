@@ -30,6 +30,8 @@ constexpr std::uint32_t kSubCameraCurrentId = 0x92u;
 constexpr std::uint32_t kSubCameraState = 0x99u;
 
 constexpr std::uint32_t kCameraHeightId = 0x14u;
+constexpr std::uint32_t kCameraButtons = 0xA70u;
+constexpr std::uint32_t kCameraRisingEdge = 0xA72u;
 constexpr std::uint32_t kCameraWyvernFindPlayer = 0xA81u;
 constexpr std::uint32_t kCameraIsChangingArea = 0xA8Bu;
 constexpr std::uint32_t kCameraLastSubCameraId = 0xA8Cu;
@@ -43,6 +45,7 @@ constexpr std::uint32_t kStdGoalRotation = 0x80u;
 constexpr std::uint32_t kStdButtons = 0x84u;
 constexpr std::uint32_t kStdRisingEdge = 0x86u;
 constexpr std::uint32_t kStdIsViewBlocked = 0x89u;
+constexpr std::uint32_t kStdKabegiwaTimer = 0x8Bu;
 constexpr std::uint32_t kStdIsKabegiwa = 0x8Cu;
 constexpr std::uint32_t kStdInertiaTimer = 0x8Du;
 constexpr std::uint32_t kStdIsFastRotate = 0x8Eu;
@@ -71,6 +74,9 @@ constexpr std::uint32_t kFollowEntryZOffset = 0x08u;
 constexpr std::uint32_t kFollowEntryHeight = 0x10u;
 constexpr std::uint32_t kFollowEntryMinHeight = 0x18u;
 
+constexpr std::uint32_t kPlFlagToolbeltOpen = 1u << 0u;
+constexpr std::uint32_t kPlFlagSupplyBoxOpen = 1u << 1u;
+constexpr std::uint32_t kPlFlagDeliveryBoxOpen = 1u << 9u;
 constexpr std::uint32_t kPlFlagScopeCam = 1u << 12u;
 constexpr std::uint32_t kPlFlagShoulderCam = 1u << 15u;
 constexpr std::uint32_t kPlFlagFishing = 1u << 19u;
@@ -198,7 +204,8 @@ bool special_player_state(const psprecomp::GuestMemory &memory, std::uint32_t pl
     }
 
     const std::uint32_t player_flags = memory.load32(player + kPlayerFlags);
-    if ((player_flags & (kPlFlagScopeCam | kPlFlagShoulderCam | kPlFlagFishing)) != 0u) {
+    if ((player_flags & (kPlFlagToolbeltOpen | kPlFlagSupplyBoxOpen | kPlFlagDeliveryBoxOpen |
+                        kPlFlagScopeCam | kPlFlagShoulderCam | kPlFlagFishing)) != 0u) {
         return true;
     }
 
@@ -206,11 +213,13 @@ bool special_player_state(const psprecomp::GuestMemory &memory, std::uint32_t pl
         !range_ok(memory, std_data, kStdGunTargetingState, 1u) ||
         !range_ok(memory, std_data, kStdIsShoulderCam, 1u) ||
         !range_ok(memory, std_data, kStdIsKabegiwa, 1u) ||
+        !range_ok(memory, std_data, kStdKabegiwaTimer, 1u) ||
         !range_ok(memory, std_data, kStdIsFastRotate, 1u)) {
         return true;
     }
 
     if (memory.load8(std_data + kStdIsFalldown) != 0u ||
+        memory.load8(std_data + kStdKabegiwaTimer) == 60u ||
         static_cast<std::int8_t>(memory.load8(std_data + kStdGunTargetingState)) >= 0 ||
         memory.load8(std_data + kStdIsShoulderCam) != 0u ||
         memory.load8(std_data + kStdIsFastRotate) != 0u) {
@@ -230,6 +239,7 @@ bool standard_camera_context(const psprecomp::GuestMemory &memory, std::uint32_t
         !range_ok(memory, camera, kCameraLastSubCameraId, 1u) ||
         !range_ok(memory, camera, kCameraWyvernFindPlayer, 1u) ||
         !range_ok(memory, camera, kCameraHeightId, 1u) ||
+        !range_ok(memory, camera, kCameraButtons, 4u) ||
         !range_ok(memory, camera, 0xDC4u, 1u) ||
         !range_ok(memory, sub_camera, kSubCameraCurrentId, 1u) ||
         !range_ok(memory, sub_camera, kSubCameraState, 1u)) {
@@ -243,7 +253,7 @@ bool standard_camera_context(const psprecomp::GuestMemory &memory, std::uint32_t
     }
 
     const std::uint8_t last_sub_camera = memory.load8(camera + kCameraLastSubCameraId);
-    if (last_sub_camera != 0u && last_sub_camera != 1u) return false;
+    if (last_sub_camera != 0u) return false;
 
     if (memory.load8(sub_camera + kSubCameraCurrentId) != 0xFFu ||
         memory.load8(sub_camera + kSubCameraState) != 0u) {
@@ -412,6 +422,8 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
     const std::uint32_t saved_entry_height = memory.load32(entry0 + kFollowEntryHeight);
     const std::uint32_t saved_entry_min_height = memory.load32(entry0 + kFollowEntryMinHeight);
     const std::uint8_t saved_height_id = memory.load8(camera + kCameraHeightId);
+    const std::uint16_t saved_camera_buttons = memory.load16(camera + kCameraButtons);
+    const std::uint16_t saved_camera_rising_edge = memory.load16(camera + kCameraRisingEdge);
     const std::uint16_t saved_buttons = memory.load16(std_data + kStdButtons);
     const std::uint16_t saved_rising_edge = memory.load16(std_data + kStdRisingEdge);
     const std::uint32_t saved_follow_entry = memory.load32(std_data + kStdFollowEntry);
@@ -430,6 +442,11 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
 
     const std::uint16_t yaw_units = angle_to_units(g_orbit.yaw);
     memory.store8(camera + kCameraHeightId, 1u);
+    // std_cam_sw_set_sub() copies these Camera-level fields into StdCameraData.
+    // Mask them only for the native camera call; the player's ordinary action
+    // inputs live in Player.buttons and remain untouched.
+    memory.store16(camera + kCameraButtons, 0u);
+    memory.store16(camera + kCameraRisingEdge, 0u);
     memory.store16(std_data + kStdButtons, 0u);
     memory.store16(std_data + kStdRisingEdge, 0u);
     memory.store8(std_data + kStdIsViewBlocked, 0u);
@@ -446,7 +463,11 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
     // If native code deliberately changed the yaw after our input (for example
     // its player-turn/auto-recenter branch), hand control back to the stock
     // camera instead of letting the two controllers fight over subsequent frames.
-    const bool native_camera_override = memory.load16(std_data + kStdGoalRotation) != yaw_units;
+    const bool native_camera_override = memory.load16(std_data + kStdGoalRotation) != yaw_units ||
+        memory.load8(std_data + kStdIsShoulderCam) != 0u ||
+        static_cast<std::int8_t>(memory.load8(std_data + kStdGunTargetingState)) >= 0 ||
+        memory.load8(std_data + kStdIsFastRotate) != 0u ||
+        memory.load8(std_data + kStdKabegiwaTimer) == 60u;
 
     // Do not leave the temporary camera profile, fixed height id or masked
     // controls in guest memory. The next frame rebuilds the orbit profile from
@@ -456,6 +477,8 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
     memory.store32(entry0 + kFollowEntryHeight, saved_entry_height);
     memory.store32(entry0 + kFollowEntryMinHeight, saved_entry_min_height);
     memory.store8(camera + kCameraHeightId, saved_height_id);
+    memory.store16(camera + kCameraButtons, saved_camera_buttons);
+    memory.store16(camera + kCameraRisingEdge, saved_camera_rising_edge);
     memory.store16(std_data + kStdButtons, saved_buttons);
     memory.store16(std_data + kStdRisingEdge, saved_rising_edge);
     memory.store32(std_data + kStdFollowEntry, saved_follow_entry);
