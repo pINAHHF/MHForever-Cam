@@ -219,7 +219,9 @@ bool special_player_state(const psprecomp::GuestMemory &memory, std::uint32_t pl
     }
 
     if (memory.load8(std_data + kStdIsFalldown) != 0u ||
-        memory.load8(std_data + kStdKabegiwaTimer) == 60u ||
+        memory.load8(std_data + kStdIsViewBlocked) != 0u ||
+        memory.load8(std_data + kStdIsKabegiwa) != 0u ||
+        memory.load8(std_data + kStdKabegiwaTimer) != 0u ||
         static_cast<std::int8_t>(memory.load8(std_data + kStdGunTargetingState)) >= 0 ||
         memory.load8(std_data + kStdIsShoulderCam) != 0u ||
         memory.load8(std_data + kStdIsFastRotate) != 0u) {
@@ -475,7 +477,7 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
         memory.load8(std_data + kStdIsFalldown) != 0u ||
         memory.load8(std_data + kStdIsKabegiwa) != 0u ||
         memory.load8(std_data + kStdIsViewBlocked) != 0u ||
-        memory.load8(std_data + kStdKabegiwaTimer) == 60u;
+        memory.load8(std_data + kStdKabegiwaTimer) != 0u;
 
     // Do not leave the temporary camera profile, fixed height id or masked
     // controls in guest memory. The next frame rebuilds the orbit profile from
