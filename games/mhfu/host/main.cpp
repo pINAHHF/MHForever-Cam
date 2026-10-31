@@ -384,7 +384,7 @@ void on_camera_orbit_frame_finalize(Runtime &rt, Context &ctx) {
 
     const float position_y = std::bit_cast<float>(memory.load32(std_data + kStdPositionYOffset));
     const float target_x = std::bit_cast<float>(memory.load32(std_data + 0x10u));
-    const float target_y = std::bit_cast<float>(memory.load32(std_data + kStdTargetYOffset - 0x40u));
+    const float target_y = std::bit_cast<float>(memory.load32(std_data + kStdTargetYOffset));
     const float target_z = std::bit_cast<float>(memory.load32(std_data + 0x18u));
     const float goal_position_y = std::bit_cast<float>(memory.load32(std_data + kStdGoalPositionYOffset));
     const float goal_target_y = std::bit_cast<float>(memory.load32(std_data + kStdGoalTargetYOffset));
