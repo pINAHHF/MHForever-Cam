@@ -1,5 +1,7 @@
 [CmdletBinding()]
 param(
+    [ValidateSet("ULUS10391", "ULES01213")]
+    [string]$Region = "ULUS10391",
     [string]$Iso,
     [string]$Exe,
     [int]$Jobs = 0,
@@ -10,9 +12,11 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$Region = "ULUS10391"
-$BuildDir = Join-Path $RepoRoot "build\windows-msvc-game"
+$RegionLabel = if ($Region -eq "ULUS10391") { "North America" } else { "Europe" }
+$ProgramName = if ($Region -eq "ULUS10391") { "mhfu-us" } else { "mhfu" }
+$BuildDir = Join-Path $RepoRoot "build\windows-msvc-game-$Region"
 $GeneratedDir = Join-Path $RepoRoot "user_data\generated\$Region"
+$RegionExeName = "${Region}_EBOOT.BIN"
 
 function Stop-WithMessage([string]$Message) {
     Write-Host ""
@@ -38,7 +42,7 @@ if (-not $CompilerCommand) { $CompilerCommand = Get-Command "clang-cl" -ErrorAct
 
 if (-not $CMakeCommand -or -not $NinjaCommand -or -not $CompilerCommand) {
     Stop-WithMessage @"
-Abra o 'Developer PowerShell for VS 2022' e execute o script novamente.
+Abra o 'x64 Native Tools Command Prompt for VS 2022' e execute o PowerShell a partir dele.
 Ele precisa encontrar CMake, Ninja e clang-cl.exe.
 No Visual Studio Installer, instale a carga 'Desenvolvimento para desktop com C++',
 o componente 'C++ Clang tools for Windows' e os componentes CMake/Ninja.
@@ -77,7 +81,7 @@ if (-not $Iso) {
         Stop-WithMessage @"
 Não encontrei a ISO em <dados do MHForever>\games\$Region\image.iso.
 Passe o caminho da sua ISO original assim:
-  .\scripts\build_mhfu_us.ps1 -Iso "D:\Jogos\MHFU.iso"
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_mhfu_us.ps1 -Region $Region -Iso "D:\Jogos\MHFU.iso"
 "@
     }
 }
@@ -90,8 +94,8 @@ $Iso = (Resolve-Path -LiteralPath $Iso).Path
 if (-not $Exe) {
     $candidates = @()
     if ($gameDataDir) { $candidates += (Join-Path $gameDataDir "executable.elf") }
-    $candidates += (Join-Path $RepoRoot "user_data\exe\ULUS10391_EBOOT.BIN")
-    $candidates += (Join-Path (Split-Path -Parent $Iso) "ULUS10391_EBOOT.BIN")
+    $candidates += (Join-Path $RepoRoot "user_data\exe\$RegionExeName")
+    $candidates += (Join-Path (Split-Path -Parent $Iso) $RegionExeName)
     $candidates += (Join-Path (Split-Path -Parent $Iso) "EBOOT.BIN")
     $Exe = $candidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
 }
@@ -100,7 +104,7 @@ if (-not $Exe -or -not (Test-Path -LiteralPath $Exe -PathType Leaf)) {
     Stop-WithMessage @"
 Não encontrei o executável já preparado pelo MHForever.
 Adicione a sua cópia do jogo pelo launcher primeiro, ou informe o ELF preparado:
-  .\scripts\build_mhfu_us.ps1 -Iso "D:\Jogos\MHFU.iso" -Exe "C:\caminho\executable.elf"
+  .\scripts\build_mhfu_us.ps1 -Region $Region -Iso "D:\Jogos\MHFU.iso" -Exe "C:\caminho\executable.elf"
 "@
 }
 $Exe = (Resolve-Path -LiteralPath $Exe).Path
@@ -108,7 +112,7 @@ $Exe = (Resolve-Path -LiteralPath $Exe).Path
 if ($Jobs -eq 0) { $Jobs = [Math]::Min(8, [Environment]::ProcessorCount) }
 if ($Jobs -lt 1 -or $Jobs -gt 64) { Stop-WithMessage "Jobs deve estar entre 1 e 64." }
 
-Write-Host "MHFU camera build — North America ($Region v1.01)" -ForegroundColor Green
+Write-Host "MHFU camera build — $RegionLabel ($Region)" -ForegroundColor Green
 Write-Host "ISO: $Iso"
 Write-Host "Executable: $Exe"
 Write-Host "Parallel jobs: $Jobs"
@@ -141,12 +145,12 @@ Invoke-Checked $PythonFile $prepareArgs "Gerar código local do MHFU"
 
 $configureGameArgs = $configureArgs + @(
     "-DMHF_MHFU_GENERATED=$GeneratedDir",
-    "-DMHF_MHFU_PROGRAM_NAME=mhfu-us"
+    "-DMHF_MHFU_PROGRAM_NAME=$ProgramName"
 )
 Invoke-Checked $CMakeCommand.Source $configureGameArgs "Configurar executável do jogo"
-Invoke-Checked $CMakeCommand.Source @("--build", $BuildDir, "--target", "mhfu", "--parallel", "$Jobs") "Compilar mhfu-us.exe"
+Invoke-Checked $CMakeCommand.Source @("--build", $BuildDir, "--target", "mhfu", "--parallel", "$Jobs") "Compilar $ProgramName.exe"
 
-$GameExe = Join-Path $BuildDir "games\mhfu\mhfu-us.exe"
+$GameExe = Join-Path $BuildDir "games\mhfu\$ProgramName.exe"
 if (-not (Test-Path -LiteralPath $GameExe -PathType Leaf)) {
     Stop-WithMessage "A compilação terminou sem criar o executável esperado: $GameExe"
 }
