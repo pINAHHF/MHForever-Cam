@@ -155,11 +155,11 @@ bool is_lobby_or_unknown(const psprecomp::GuestMemory &memory) {
         return true;
     }
     // These independent fields make a false-positive singleton match very unlikely.
-    if (memory.load8(game_sys + 0x28u) >= 4u ||
-        memory.load8(game_sys + 0x422u) > 1u ||
-        memory.load8(game_sys + 0x480u) > 1u) {
-        return true;
-    }
+    const std::uint8_t player_id = memory.load8(game_sys + 0x28u);
+    const std::uint8_t is_demo = memory.load8(game_sys + 0x422u);
+    const std::uint8_t is_gallery_task = memory.load8(game_sys + 0x480u);
+    if (player_id >= 4u || is_demo > 1u || is_gallery_task > 1u) return true;
+    if (is_demo != 0u || is_gallery_task != 0u) return true;
     return (memory.load32(game_sys + kGameSysFlags) & kLobbyTaskFlag) != 0u;
 #endif
 }
@@ -403,7 +403,7 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
 
     g_orbit.last_update_us = now;
 
-    // The original camera routine remains only as a collision/ground resolver.
+    // The native camera routine is retained as the wall/ground/safety solver.
     // Its five height stages and D-pad camera controls are disabled for this call:
     // we temporarily expose one synthetic follow entry, then restore every input
     // and profile byte immediately after the native wall/floor checks have run.
