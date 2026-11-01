@@ -85,8 +85,6 @@ constexpr std::uint32_t kPlayerDialogTimer = 0x552u;
 constexpr std::uint32_t kPlayerScopeAimIncrement = 0x564u;
 constexpr std::uint32_t kPlayerFlags = 0x614u;
 
-constexpr std::uint32_t kGameSysFlags = 0x6AF14u;
-constexpr std::uint32_t kLobbyTaskFlag = 1u << 0u;
 
 constexpr std::uint32_t kAreaMoveType = 0x02u;
 constexpr std::uint32_t kAreaHeightDefinition = 0x20u;
@@ -164,91 +162,6 @@ std::uint16_t angle_to_units(float radians) {
     return static_cast<std::uint16_t>(rounded);
 }
 
-bool is_lobby_or_unknown(const psprecomp::GuestMemory &memory, char *reason,
-                         std::size_t reason_size) {
-#if MHF_MHFU_GAME_SYS_SINGLETON == 0
-    (void)memory;
-    std::snprintf(reason, reason_size, "GameSys singleton symbol is disabled");
-    return true;
-#else
-    // 0x089C7508 is the exact GameSys::objectPtr address in the MHP2G reference.
-    // 0x089C7628 is the provisional US address, shifted by the observed +0x120
-    // relocation. Test both before treating either as authoritative.
-    constexpr std::uint32_t slots[] = {
-        MHF_MHFU_GAME_SYS_SINGLETON,
-        0x089C7508u,
-    };
-    std::uint32_t seen_slots[2]{};
-    std::uint32_t seen_ptrs[2]{};
-    bool valid[2]{};
-    std::uint8_t player_ids[2]{};
-    std::uint8_t demos[2]{};
-    std::uint8_t galleries[2]{};
-    std::uint32_t flags[2]{};
-
-    for (std::size_t i = 0; i < 2u; ++i) {
-        seen_slots[i] = slots[i];
-        if (i == 1u && slots[i] == slots[0]) continue;
-        if (!memory.contains(slots[i], 4u)) continue;
-
-        const std::uint32_t game_sys = memory.load32(slots[i]);
-        seen_ptrs[i] = game_sys;
-        if (game_sys < 0x08800000u || game_sys >= 0x0A000000u ||
-            !range_ok(memory, game_sys, kGameSysFlags, 4u) ||
-            !range_ok(memory, game_sys, 0x28u, 1u) ||
-            !range_ok(memory, game_sys, 0x422u, 1u) ||
-            !range_ok(memory, game_sys, 0x480u, 1u)) {
-            continue;
-        }
-
-        player_ids[i] = memory.load8(game_sys + 0x28u);
-        demos[i] = memory.load8(game_sys + 0x422u);
-        galleries[i] = memory.load8(game_sys + 0x480u);
-        flags[i] = memory.load32(game_sys + kGameSysFlags);
-        valid[i] = player_ids[i] < 4u && demos[i] <= 1u && galleries[i] <= 1u;
-    }
-
-    for (std::size_t i = 0; i < 2u; ++i) {
-        if (!valid[i]) continue;
-
-        if (camera_trace_enabled()) {
-            char message[192]{};
-            std::snprintf(message, sizeof(message),
-                          "GameSys candidate accepted: slot=0x%08X ptr=0x%08X player=%u demo=%u gallery=%u flags=0x%08X",
-                          static_cast<unsigned>(seen_slots[i]), static_cast<unsigned>(seen_ptrs[i]),
-                          static_cast<unsigned>(player_ids[i]), static_cast<unsigned>(demos[i]),
-                          static_cast<unsigned>(galleries[i]), static_cast<unsigned>(flags[i]));
-            camera_trace(message);
-        }
-
-        if (demos[i] != 0u || galleries[i] != 0u) {
-            std::snprintf(reason, reason_size,
-                          "GameSys special context at slot 0x%08X (demo=%u gallery=%u)",
-                          static_cast<unsigned>(seen_slots[i]), static_cast<unsigned>(demos[i]),
-                          static_cast<unsigned>(galleries[i]));
-            return true;
-        }
-        if ((flags[i] & kLobbyTaskFlag) != 0u) {
-            std::snprintf(reason, reason_size,
-                          "GameSys lobby flag set at slot 0x%08X (flags=0x%08X)",
-                          static_cast<unsigned>(seen_slots[i]), static_cast<unsigned>(flags[i]));
-            return true;
-        }
-        reason[0] = '\0';
-        return false;
-    }
-
-    std::snprintf(reason, reason_size,
-                  "no GameSys: A[%08X>%08X p%u d%u g%u f%08X] B[%08X>%08X p%u d%u g%u f%08X]",
-                  static_cast<unsigned>(seen_slots[0]), static_cast<unsigned>(seen_ptrs[0]),
-                  static_cast<unsigned>(player_ids[0]), static_cast<unsigned>(demos[0]),
-                  static_cast<unsigned>(galleries[0]), static_cast<unsigned>(flags[0]),
-                  static_cast<unsigned>(seen_slots[1]), static_cast<unsigned>(seen_ptrs[1]),
-                  static_cast<unsigned>(player_ids[1]), static_cast<unsigned>(demos[1]),
-                  static_cast<unsigned>(galleries[1]), static_cast<unsigned>(flags[1]));
-    return true;
-#endif
-}
 
 bool special_sub_camera_active(const psprecomp::GuestMemory &memory, std::uint32_t camera) {
     // Camera::cam2view selects DEMO (5), PCHNGR (3), or PLAYER_EX (4).
@@ -334,6 +247,7 @@ bool standard_camera_context(const psprecomp::GuestMemory &memory, std::uint32_t
         !range_ok(memory, camera, kCameraHeightId, 1u) ||
         !range_ok(memory, camera, kCameraButtons, 4u) ||
         !range_ok(memory, camera, 0xDC4u, 1u) ||
+        !range_ok(memory, sub_camera, kSubCameraIsActive, 1u) ||
         !range_ok(memory, sub_camera, kSubCameraCurrentId, 1u) ||
         !range_ok(memory, sub_camera, kSubCameraState, 1u)) {
         return reject("camera/subcamera structure range validation failed");
@@ -372,12 +286,17 @@ bool standard_camera_context(const psprecomp::GuestMemory &memory, std::uint32_t
         return false;
     }
 
+    const std::uint8_t std_active = memory.load8(sub_camera + kSubCameraIsActive);
+    if (std_active == 0u) {
+        return reject("STD subcamera is not active (normal follow camera inactive; lobby/special context)");
+    }
     const std::uint8_t current_id = memory.load8(sub_camera + kSubCameraCurrentId);
     const std::uint8_t state = memory.load8(sub_camera + kSubCameraState);
     if (current_id != 0xFFu || state != 0u) {
         std::snprintf(reject_reason, reject_reason_size,
-                      "STD subcamera state mismatch (current_id=0x%02X state=%u)",
-                      static_cast<unsigned>(current_id), static_cast<unsigned>(state));
+                      "STD subcamera state mismatch (active=%u current_id=0x%02X state=%u)",
+                      static_cast<unsigned>(std_active), static_cast<unsigned>(current_id),
+                      static_cast<unsigned>(state));
         return false;
     }
 
@@ -419,12 +338,9 @@ bool standard_camera_context(const psprecomp::GuestMemory &memory, std::uint32_t
         return false;
     }
 
-    char singleton_reason[160]{};
-    if (is_lobby_or_unknown(memory, singleton_reason, sizeof(singleton_reason))) {
-        std::snprintf(reject_reason, reject_reason_size, "%s", singleton_reason);
-        return false;
-    }
-
+    // The original SubCamera::cam_sub_std sets isActive only after its
+    // GameSys lobby early-return. That state is local to the camera object and
+    // avoids relying on a region-specific GameSys singleton address.
     reject_reason[0] = '\0';
     return true;
 }
