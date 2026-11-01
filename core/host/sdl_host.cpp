@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 namespace mhf::host {
@@ -307,6 +308,24 @@ void SdlHost::window_pixel_size(int &width, int &height) const {
 
 GamepadState SdlHost::input() const {
     GamepadState s;
+    if (std::getenv("MHF_CAMERA_LOG") != nullptr) {
+        static Uint64 last_trace_ms = 0;
+        const Uint64 now_ms = SDL_GetTicks();
+        if (last_trace_ms == 0 || now_ms < last_trace_ms || now_ms - last_trace_ms >= 500) {
+            std::fprintf(stderr, "[host-pad] right-stick sources: gamepads=%zu", impl_->gamepads.size());
+            for (std::size_t i = 0; i < impl_->gamepads.size(); ++i) {
+                SDL_Gamepad *gamepad = impl_->gamepads[i];
+                const Sint16 raw_x = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTX);
+                const Sint16 raw_y = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTY);
+                const char *name = SDL_GetGamepadName(gamepad);
+                std::fprintf(stderr, " | #%zu %s RX=%d RY=%d", i,
+                             name != nullptr ? name : "(unknown)",
+                             static_cast<int>(raw_x), static_cast<int>(raw_y));
+            }
+            std::fputc('\\n', stderr);
+            last_trace_ms = now_ms;
+        }
+    }
     static const bool kNoKeys[SDL_SCANCODE_COUNT] = {};
     // While text is being typed, letters are text, not buttons.
     const bool *down = impl_->text_input ? kNoKeys : SDL_GetKeyboardState(nullptr);
