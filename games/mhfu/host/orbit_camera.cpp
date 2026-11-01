@@ -636,12 +636,16 @@ void replace_standard_view_from_stage(Runtime &runtime, std::uint32_t camera) {
     const float offset_y = position_y - target_y;
     const float offset_z = position_z - target_z;
     const float horizontal = std::hypot(offset_x, offset_z);
-    const float distance = std::sqrt(horizontal * horizontal + offset_y * offset_y);
+    // A collision can legitimately pull the rendered camera very close to
+    // its target. Validate that the view vectors are finite, but validate
+    // orbit distance from the unmodified follow profile below, not this
+    // collision-shortened rendered position.
     if (!std::isfinite(position_x) || !std::isfinite(position_y) ||
         !std::isfinite(position_z) || !std::isfinite(target_x) ||
         !std::isfinite(target_y) || !std::isfinite(target_z) ||
-        !std::isfinite(distance) || distance < kMinOrbitDistance ||
-        distance > kMaxOrbitDistance || horizontal < 1.0f) {
+        !std::isfinite(horizontal) || horizontal < 1.0f) {
+        restore_standard_camera_profile(memory);
+        g_orbit = {};
         runtime.note_analog_camera_update(0u);
         camera_trace("STD-after-STG rejected: native camera position/target is invalid");
         return;
