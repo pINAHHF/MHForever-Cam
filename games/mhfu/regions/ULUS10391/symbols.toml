@@ -22,7 +22,10 @@ mh_camera_orbit_inputs  = 0x088878BC # matches the EU camera input site
 
 [data]
 mh_overlay_region_bases = 0x089CBB90 # u32[6], region base address per group
-mh_game_sys_singleton    = 0x089C7628 # Candidate MHP2G GameSys singleton slot plus the observed +0x120 US data-region displacement; runtime validates the object and falls back if invalid.
+mh_game_sys_singleton    = 0x089C7628 # GameSys::objectPtr; EU symbol +0x120 in this US executable.
+mh_game_task_singleton   = 0x09A40AB8 # GameTask::objectPtr; EU symbol +0x120 in this US executable.
+mh_task_manager_singleton = 0x08A863D8 # TaskManager::objectPtr; EU symbol +0x120 in this US executable.
+mh_system_singleton      = 0x08A5E390 # System::objectPtr; EU symbol +0x120 in this US executable.
 
 [offsets]
 system_active_overlays  = 0x00F7A580 # u16[6] inside System, active DATA.BIN file id per group (0xFFFF = none); built by the same instructions as in EU
