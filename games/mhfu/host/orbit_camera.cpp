@@ -472,7 +472,7 @@ void restore_offset_pan_profile(psprecomp::GuestMemory &memory) {
 }
 
 bool capture_offset_pan_orbit(OrbitState &state, const psprecomp::GuestMemory &memory,
-                              std::uint32_t sub_camera, std::uint32_t camera,
+                              std::uint32_t stage_sub_camera, std::uint32_t camera,
                               std::uint32_t area, std::uint32_t player) {
     if (!range_ok(memory, player, kPlayerPositionX, 12u) ||
         !range_ok(memory, area, kAreaPanCameraPosition, 12u) ||
@@ -504,7 +504,7 @@ bool capture_offset_pan_orbit(OrbitState &state, const psprecomp::GuestMemory &m
     state.active = true;
     state.mode = kOrbitModeOffsetPan;
     state.area_id = memory.load8(area + 1u);
-    state.sub_camera = sub_camera + 2u * kSubCameraStride;
+    state.sub_camera = stage_sub_camera;
     state.camera = camera;
     state.area = area;
     state.player = player;
@@ -519,10 +519,9 @@ bool capture_offset_pan_orbit(OrbitState &state, const psprecomp::GuestMemory &m
 }
 
 void replace_offset_pan_camera(Runtime &runtime, Context &context, GuestFunction original,
-                               std::uint32_t std_sub_camera, std::uint32_t camera,
+                               std::uint32_t stg_sub_camera, std::uint32_t camera,
                                std::uint32_t area, std::uint32_t player) {
     auto &memory = runtime.memory();
-    const std::uint32_t stg_sub_camera = camera + kCameraFromSubCamera + 2u * kSubCameraStride;
     const std::uint32_t stg_data = stg_sub_camera + kSubCameraData;
 
     if (!range_ok(memory, stg_sub_camera, 0u, 0xA0u) ||
@@ -556,12 +555,25 @@ void replace_offset_pan_camera(Runtime &runtime, Context &context, GuestFunction
         return;
     }
 
-    // SubCamera::cam_sub_stg initializes its mode on the first visit to an area.
-    // Let that one native frame establish the state; takeover begins from mode 1.
-    if (memory.load8(stg_sub_camera + kSubCameraIsActive) == 0u ||
-        memory.load8(stg_sub_camera + 0x98u) != 1u ||
-        memory.load8(stg_sub_camera + kSubCameraState) != 0u) {
-        fallback(runtime, context, original, "fallback: OFFSET_PAN subcamera is initializing or transitioning");
+    // The STG function is called after STD in Camera::CameraMove. On the first
+    // OFFSET_PAN frame its mode is still zero; let the native function initialize
+    // its position/target, then take over on the next frame.
+    const std::uint8_t stg_mode = memory.load8(stg_sub_camera + 0x98u);
+    const std::uint8_t stg_active = memory.load8(stg_sub_camera + kSubCameraIsActive);
+    const std::uint8_t stg_state = memory.load8(stg_sub_camera + kSubCameraState);
+    if (stg_mode == 0u) {
+        if (g_orbit.active && g_orbit.mode == kOrbitModeOffsetPan &&
+            (g_orbit.camera != camera || g_orbit.area != area || g_orbit.player != player)) {
+            restore_offset_pan_profile(memory);
+            g_orbit = {};
+            runtime.note_analog_camera_update(0u);
+        }
+        camera_trace("OFFSET_PAN native initialization frame; takeover on next STG update");
+        if (original != nullptr) original(runtime, context);
+        return;
+    }
+    if (stg_mode != 1u || stg_active == 0u || stg_state != 0u) {
+        fallback(runtime, context, original, "fallback: OFFSET_PAN STG camera is in a transition state");
         return;
     }
 
@@ -575,7 +587,7 @@ void replace_offset_pan_camera(Runtime &runtime, Context &context, GuestFunction
         g_orbit.area_id != memory.load8(area + 1u) || g_orbit.sub_camera != stg_sub_camera) {
         restore_offset_pan_profile(memory);
         g_orbit = {};
-        if (!capture_offset_pan_orbit(g_orbit, memory, std_sub_camera, camera, area, player)) {
+        if (!capture_offset_pan_orbit(g_orbit, memory, stg_sub_camera, camera, area, player)) {
             fallback(runtime, context, original, "fallback: could not capture initial OFFSET_PAN orbit");
             return;
         }
@@ -629,7 +641,7 @@ void replace_offset_pan_camera(Runtime &runtime, Context &context, GuestFunction
     }
 
     // Feed the desired orbit into the area profile and its native STG angles
-    // before cam_sub_stg() executes later in Camera::CameraMove().
+    // immediately before the original cam_sub_stg() consumes them.
     store_float(memory, area + kAreaPanCameraPosition, pan_x);
     store_float(memory, area + kAreaPanCameraPosition + 4u, pan_y);
     store_float(memory, area + kAreaPanCameraPosition + 8u, pan_z);
@@ -663,8 +675,7 @@ void replace_offset_pan_camera(Runtime &runtime, Context &context, GuestFunction
     camera_trace("orbit active: OFFSET_PAN right-stick camera path accepted");
     runtime.note_analog_camera_update(now);
 
-    // The original STD camera update returns immediately because this area is STG;
-    // the engine then advances its STG camera using the profile we just supplied.
+    // The original STG update consumes the adjusted OFFSET_PAN position/angles now.
     if (original != nullptr) original(runtime, context);
 }
 
@@ -702,21 +713,24 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
     const std::uint8_t move_type = range_ok(memory, current_area, kAreaMoveType, 1u)
         ? memory.load8(current_area + kAreaMoveType) : 0xFFu;
 
-    // Leaving an OFFSET_PAN area must restore its immutable map profile before
-    // the standard/rail/fixed camera path takes over.
-    const bool same_offset_pan = area_sub_id == 2u && move_type == 3u &&
-        current_area == g_orbit.area && current_player == g_orbit.player &&
-        g_orbit.mode == kOrbitModeOffsetPan;
-    if (g_orbit.active && g_orbit.mode == kOrbitModeOffsetPan && !same_offset_pan) {
+    // STD runs before STG in Camera::CameraMove. When the selected area camera is
+    // STG, leave it alone here: the dedicated cam_sub_stg replacement below owns
+    // OFFSET_PAN. In particular, do not clear the STG orbit state on every frame.
+    if (area_sub_id != 0u) {
+        if (g_orbit.active && g_orbit.mode == kOrbitModeStandard) {
+            g_orbit = {};
+            runtime.note_analog_camera_update(0u);
+        }
+        if (original != nullptr) original(runtime, context);
+        return;
+    }
+
+    // Returning from an OFFSET_PAN area to ordinary STD follow restores the
+    // immutable map profile before the normal camera path resumes.
+    if (g_orbit.active && g_orbit.mode == kOrbitModeOffsetPan) {
         restore_offset_pan_profile(memory);
         g_orbit = {};
         runtime.note_analog_camera_update(0u);
-    }
-
-    if (area_sub_id == 2u && move_type == 3u) {
-        replace_offset_pan_camera(runtime, context, original, sub_camera, camera,
-                                  current_area, current_player);
-        return;
     }
 
     std::uint32_t area = 0u;
@@ -886,8 +900,48 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
 
 } // namespace
 
+void replace_stage_camera(Runtime &runtime, Context &context, GuestFunction original) {
+    camera_trace("replacement reached: mh_camera_stage_update");
+    auto &memory = runtime.memory();
+    const std::uint32_t stage_sub_camera = context.gpr[4]; // SubCamera::cam_sub_stg this
+    constexpr std::uint32_t kCameraFromStageSubCamera =
+        kCameraFromSubCamera + 2u * kSubCameraStride;
+    if (stage_sub_camera < kCameraFromStageSubCamera) {
+        fallback(runtime, context, original, "fallback: STG SubCamera pointer is below expected Camera offset");
+        return;
+    }
+
+    const std::uint32_t camera = stage_sub_camera - kCameraFromStageSubCamera;
+    if (!range_ok(memory, camera, kCameraAreaSubCameraId, 1u) ||
+        !range_ok(memory, camera, kCameraAreaConfig, 4u) ||
+        !range_ok(memory, camera, kCameraPlayer, 4u)) {
+        fallback(runtime, context, original, "fallback: STG camera structure range validation failed");
+        return;
+    }
+
+    const std::uint8_t area_sub_id = memory.load8(camera + kCameraAreaSubCameraId);
+    const std::uint32_t area = memory.load32(camera + kCameraAreaConfig);
+    const std::uint32_t player = memory.load32(camera + kCameraPlayer);
+    const bool is_offset_pan = area_sub_id == 2u &&
+        range_ok(memory, area, kAreaMoveType, 1u) &&
+        memory.load8(area + kAreaMoveType) == 3u;
+    if (!is_offset_pan) {
+        if (g_orbit.active && g_orbit.mode == kOrbitModeOffsetPan) {
+            restore_offset_pan_profile(memory);
+            g_orbit = {};
+            runtime.note_analog_camera_update(0u);
+        }
+        if (original != nullptr) original(runtime, context);
+        return;
+    }
+
+    replace_offset_pan_camera(runtime, context, original, stage_sub_camera,
+                              camera, area, player);
+}
+
 void register_mhfu_orbit_camera(Runtime &runtime) {
     runtime.register_replacement("mh_camera_orbit_update", &replace_standard_camera);
+    runtime.register_replacement("mh_camera_stage_update", &replace_stage_camera);
 }
 
 } // namespace mhf::psp
