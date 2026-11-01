@@ -1013,7 +1013,59 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
             runtime.note_analog_camera_update(0u);
         }
     }
-    if (original != nullptr) original(runtime, context);
+    if (original == nullptr) return;
+
+    // The original SubCamera::Cam_senkai_chk() uses R_TRIGGER + RISING_EDGE
+    // to rotate the camera while a bow is drawn. Keep the trigger available to
+    // the rest of the game (including item selection), but hide it from this
+    // camera-only update. Player::buttons and StdCameraData input are snapshots
+    // consumed by cam_sub_std(); restore them immediately after the native call.
+    bool r1_masked = false;
+    std::uint32_t player_buttons_address = 0u;
+    std::uint32_t saved_player_buttons = 0u;
+    std::uint32_t std_buttons_address = 0u;
+    std::uint32_t std_rising_edge_address = 0u;
+    std::uint16_t saved_std_buttons = 0u;
+    std::uint16_t saved_std_rising_edge = 0u;
+
+    if (sub_camera >= kCameraFromSubCamera) {
+        const std::uint32_t camera = sub_camera - kCameraFromSubCamera;
+        const std::uint32_t std_data = sub_camera + kSubCameraData;
+        if (range_ok(memory, std_data, 0x84u, 4u) &&
+            range_ok(memory, camera, kCameraPlayer, 4u)) {
+            const std::uint32_t player = memory.load32(camera + kCameraPlayer);
+            player_buttons_address = player + 0x480u;
+            if (player != 0u && range_ok(memory, player, 0x480u, 4u)) {
+                std_buttons_address = std_data + 0x84u;
+                std_rising_edge_address = std_data + 0x86u;
+                saved_std_buttons = memory.load16(std_buttons_address);
+                saved_std_rising_edge = memory.load16(std_rising_edge_address);
+                saved_player_buttons = memory.load32(player_buttons_address);
+                const std::uint16_t r1 = static_cast<std::uint16_t>(buttons::kRTrigger);
+                if (((saved_std_buttons | saved_std_rising_edge) & r1) != 0u ||
+                    (saved_player_buttons & buttons::kRTrigger) != 0u) {
+                    memory.store16(std_buttons_address,
+                        static_cast<std::uint16_t>(saved_std_buttons & ~r1));
+                    memory.store16(std_rising_edge_address,
+                        static_cast<std::uint16_t>(saved_std_rising_edge & ~r1));
+                    memory.store32(player_buttons_address,
+                        saved_player_buttons & ~buttons::kRTrigger);
+                    r1_masked = true;
+                }
+            }
+        }
+    }
+
+    if (r1_masked) {
+        camera_trace("native camera R1 suppressed for this camera update; game input remains unchanged");
+    }
+    original(runtime, context);
+
+    if (r1_masked) {
+        memory.store16(std_buttons_address, saved_std_buttons);
+        memory.store16(std_rising_edge_address, saved_std_rising_edge);
+        memory.store32(player_buttons_address, saved_player_buttons);
+    }
 }
 
 } // namespace
