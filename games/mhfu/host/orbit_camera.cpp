@@ -80,7 +80,6 @@ constexpr std::uint32_t kFollowHeightYOffset = 0x04u;
 constexpr std::uint32_t kFollowHeightZOffset = 0x08u;
 constexpr std::uint32_t kFollowHeightHeight = 0x10u;
 
-constexpr std::uint32_t kPlayerRotationY = 0x1F4u;
 constexpr std::uint32_t kPlayerPosture = 0x280u;
 constexpr std::uint32_t kPlayerActionType = 0x294u;
 constexpr std::uint32_t kPlayerActionId = 0x295u;
@@ -116,7 +115,6 @@ constexpr std::uint8_t kOrbitModeOffsetPan = 2u;
 
 struct OrbitState {
     bool active{};
-    bool rtrigger_was_down{};
     std::uint8_t mode{};
     std::uint8_t area_id{};
     std::uint32_t sub_camera{};
@@ -180,12 +178,6 @@ float load_float(const psprecomp::GuestMemory &memory, std::uint32_t address) {
 void store_float(psprecomp::GuestMemory &memory, std::uint32_t address, float value) {
     memory.store32(address, std::bit_cast<std::uint32_t>(value));
 }
-
-// Rotate a camera position around the player's XZ target. The native STD
-// routine can request a one-frame recenter while the orbit is active; applying
-// the inverse angular correction to its resolved output preserves collision
-// adjustments without allowing that recenter to take ownership of the view.
-
 
 float shape_axis(float value) {
     value = std::clamp(value, -1.0f, 1.0f);
@@ -401,8 +393,7 @@ void replace_offset_pan_camera(Runtime &runtime, Context &context, GuestFunction
         !range_ok(memory, camera, kCameraWyvernFindPlayer, 1u) ||
         !range_ok(memory, camera, 0xDC4u, 1u) ||
         !range_ok(memory, area, kAreaPanCameraPosition, 12u) ||
-        !range_ok(memory, player, kPlayerPositionX, 12u) ||
-        !range_ok(memory, player, kPlayerRotationY, 2u)) {
+        !range_ok(memory, player, kPlayerPositionX, 12u)) {
         fallback(runtime, context, original, "fallback: OFFSET_PAN camera/player structure range validation failed");
         return;
     }
@@ -547,19 +538,11 @@ void replace_offset_pan_camera(Runtime &runtime, Context &context, GuestFunction
     const ControllerState &pad = controller_state(runtime);
     const float dx = shape_axis(pad.rx);
     const float dy = shape_axis(pad.ry);
-    const bool rtrigger_down = (pad.buttons & buttons::kRTrigger) != 0u;
-    const bool rtrigger_pressed = rtrigger_down && !g_orbit.rtrigger_was_down;
-    g_orbit.rtrigger_was_down = rtrigger_down;
-    if (rtrigger_pressed) {
-        const auto player_rotation = static_cast<std::int16_t>(memory.load16(player + kPlayerRotationY));
-        const std::int32_t recentered = static_cast<std::int32_t>(player_rotation) + 0x8000;
-        g_orbit.yaw = wrap_angle(static_cast<float>(recentered) / kAngleUnitsPerRadian);
-        g_orbit.elevation = g_orbit.initial_elevation;
-    } else {
-        g_orbit.yaw = wrap_angle(g_orbit.yaw - dx * kYawSpeed * dt);
-        g_orbit.elevation = std::clamp(g_orbit.elevation + dy * kPitchSpeed * dt,
-                                       kMinElevation, kMaxElevation);
-    }
+    // R1 remains exclusively a game button (item selector). Camera orbit state
+    // is driven only by the right analog stick.
+    g_orbit.yaw = wrap_angle(g_orbit.yaw - dx * kYawSpeed * dt);
+    g_orbit.elevation = std::clamp(g_orbit.elevation + dy * kPitchSpeed * dt,
+                                   kMinElevation, kMaxElevation);
 
     const float cos_elevation = std::cos(g_orbit.elevation);
     const float camera_x = target_x - std::sin(g_orbit.yaw) * cos_elevation * g_orbit.distance;
@@ -592,7 +575,7 @@ void replace_offset_pan_camera(Runtime &runtime, Context &context, GuestFunction
             now - last_input_trace_us >= 500'000u) {
             std::fprintf(stderr,
                 "[mhfu-camera] OFFSET_PAN input area=0x%08X sub=(active=%u mode=%u state=%u) "
-                "rx=%+.3f ry=%+.3f shaped=(%+.3f,%+.3f) buttons=0x%08X R1=%u edge=%u "
+                "rx=%+.3f ry=%+.3f shaped=(%+.3f,%+.3f) buttons=0x%08X "
                 "yaw=%.3f elevation=%.3f player=(%.1f,%.1f,%.1f) "
                 "target=(%.1f,%.1f,%.1f) pan=(%.1f,%.1f,%.1f)\n",
                 static_cast<unsigned>(area),
@@ -602,8 +585,6 @@ void replace_offset_pan_camera(Runtime &runtime, Context &context, GuestFunction
                 static_cast<double>(pad.rx), static_cast<double>(pad.ry),
                 static_cast<double>(dx), static_cast<double>(dy),
                 static_cast<unsigned>(pad.buttons),
-                static_cast<unsigned>(rtrigger_down),
-                static_cast<unsigned>(rtrigger_pressed),
                 static_cast<double>(g_orbit.yaw), static_cast<double>(g_orbit.elevation),
                 static_cast<double>(player_x), static_cast<double>(player_y), static_cast<double>(player_z),
                 static_cast<double>(target_x), static_cast<double>(target_y), static_cast<double>(target_z),
@@ -808,22 +789,11 @@ void update_standard_orbit_before_native(Runtime &runtime, std::uint32_t camera)
     const ControllerState &pad = controller_state(runtime);
     const float dx = shape_axis(pad.rx);
     const float dy = shape_axis(pad.ry);
-    const bool rtrigger_down = (pad.buttons & buttons::kRTrigger) != 0u;
-    const bool rtrigger_pressed = rtrigger_down && !g_orbit.rtrigger_was_down;
-    g_orbit.rtrigger_was_down = rtrigger_down;
-    if (rtrigger_pressed) {
-        const auto player_rotation =
-            static_cast<std::int16_t>(memory.load16(player + kPlayerRotationY));
-        const std::int32_t recentered =
-            static_cast<std::int32_t>(player_rotation) + 0x8000;
-        g_orbit.yaw = wrap_angle(static_cast<float>(recentered) /
-                                 kAngleUnitsPerRadian);
-        g_orbit.elevation = g_orbit.initial_elevation;
-    } else {
-        g_orbit.yaw = wrap_angle(g_orbit.yaw - dx * kYawSpeed * dt);
-        g_orbit.elevation = std::clamp(g_orbit.elevation + dy * kPitchSpeed * dt,
-                                       kMinElevation, kMaxElevation);
-    }
+    // R1 remains exclusively a game button (item selector). Camera orbit state
+    // is driven only by the right analog stick.
+    g_orbit.yaw = wrap_angle(g_orbit.yaw - dx * kYawSpeed * dt);
+    g_orbit.elevation = std::clamp(g_orbit.elevation + dy * kPitchSpeed * dt,
+                                   kMinElevation, kMaxElevation);
     g_orbit.last_update_us = now;
 
     // Feed the desired orbit into the native STD follow profile before
@@ -861,14 +831,12 @@ void update_standard_orbit_before_native(Runtime &runtime, std::uint32_t camera)
             now - last_input_trace_us >= 500'000u) {
             std::fprintf(stderr,
                 "[mhfu-camera] STD-before-native input rx=%+.3f ry=%+.3f "
-                "shaped=(%+.3f,%+.3f) buttons=0x%08X R1=%u edge=%u "
+                "shaped=(%+.3f,%+.3f) buttons=0x%08X "
                 "yaw=%.3f elevation=%.3f native_collision_flags=%u "
                 "yaw_units=%u target=(%.1f,%.1f,%.1f)\n",
                 static_cast<double>(pad.rx), static_cast<double>(pad.ry),
                 static_cast<double>(dx), static_cast<double>(dy),
                 static_cast<unsigned>(pad.buttons),
-                static_cast<unsigned>(rtrigger_down),
-                static_cast<unsigned>(rtrigger_pressed),
                 static_cast<double>(g_orbit.yaw),
                 static_cast<double>(g_orbit.elevation),
                 static_cast<unsigned>(collision_constrained),
@@ -900,11 +868,10 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
             const ControllerState &pad = controller_state(runtime);
             std::fprintf(stderr,
                 "[mhfu-camera] STD hook this=0x%08X camera=0x%08X area_sub=%u selected=%u "
-                "hunt=%u buttons=0x%08X R1=%u rx=%+.3f ry=%+.3f\n",
+                "hunt=%u buttons=0x%08X rx=%+.3f ry=%+.3f\n",
                 static_cast<unsigned>(sub_camera), static_cast<unsigned>(camera),
                 static_cast<unsigned>(area_sub), static_cast<unsigned>(selected),
                 static_cast<unsigned>(hunt), static_cast<unsigned>(pad.buttons),
-                static_cast<unsigned>((pad.buttons & buttons::kRTrigger) != 0u),
                 static_cast<double>(pad.rx), static_cast<double>(pad.ry));
             last_std_hook_trace_us = now;
         }
