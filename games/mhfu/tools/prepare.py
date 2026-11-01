@@ -136,6 +136,7 @@ def main():
         header.write("#pragma once\n")
         header.write(f"#define MHF_MHFU_HAS_ANALOG_CAMERA {1 if camera_supported else 0}\n")
         header.write(f"#define MHF_MHFU_GAME_SYS_SINGLETON 0x{game_sys_singleton:08X}u\n")
+        header.write(f"#define MHF_MHFU_QUEST_SINGLETON 0x{quest_singleton:08X}u\\n")
         header.write(f"#define MHF_MHFU_GAME_TASK_SINGLETON 0x{game_task_singleton:08X}u\n")
         header.write(f"#define MHF_MHFU_TASK_MANAGER_SINGLETON 0x{task_manager_singleton:08X}u\n")
         header.write(f"#define MHF_MHFU_SYSTEM_SINGLETON 0x{system_singleton:08X}u\n")
