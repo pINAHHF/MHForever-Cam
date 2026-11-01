@@ -1115,15 +1115,11 @@ void apply_standard_orbit_pitch_after_native(Runtime &runtime, std::uint32_t cam
         return;
     }
 
-    // Never rotate the resolved view while the native camera reports a
-    // fall, blocked-view, wall-climb or wall-climb timer state. In those
-    // cases the original collision/scripted camera keeps full ownership.
     const bool collision_constrained =
         memory.load8(std_data + kStdIsFalldown) != 0u ||
         memory.load8(std_data + kStdIsViewBlocked) != 0u ||
         memory.load8(std_data + kStdIsKabegiwa) != 0u ||
         memory.load8(std_data + kStdKabegiwaTimer) != 0u;
-    if (collision_constrained) return;
 
     const float position_x = load_float(memory, sub_camera + 0x00u);
     const float position_y = load_float(memory, sub_camera + 0x04u);
@@ -1143,6 +1139,18 @@ void apply_standard_orbit_pitch_after_native(Runtime &runtime, std::uint32_t cam
         !std::isfinite(target_y) || !std::isfinite(target_z) ||
         !std::isfinite(horizontal) || !std::isfinite(distance) ||
         horizontal < 0.01f || distance < 1.0f) {
+        return;
+    }
+
+    // Keep the native collision-safe position untouched while a wall/fall/
+    // blocked-view contact is active, but adopt its resolved orbit angles.
+    // Without this sync, g_orbit keeps the pre-contact angles and snaps back
+    // to that stale orbit on the first frame after the native flag clears.
+    if (collision_constrained) {
+        g_orbit.yaw = wrap_angle(std::atan2(-offset_x, -offset_z));
+        g_orbit.elevation = std::clamp(
+            std::atan2(offset_y, horizontal), kMinElevation, kMaxElevation);
+        g_orbit.last_update_us = runtime.now_us();
         return;
     }
 
