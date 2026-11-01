@@ -6,6 +6,9 @@
 #include "mhfu_camera_support.hpp"
 #else
 #define MHF_MHFU_GAME_SYS_SINGLETON 0u
+#define MHF_MHFU_GAME_TASK_SINGLETON 0u
+#define MHF_MHFU_TASK_MANAGER_SINGLETON 0u
+#define MHF_MHFU_SYSTEM_SINGLETON 0u
 #endif
 
 #include <algorithm>
@@ -161,30 +164,70 @@ bool is_hunt_camera_context(const psprecomp::GuestMemory &memory) {
         camera_trace("camera task guard: GameSys flags are unreadable");
         return false;
     }
-    // Include the mission identity alongside the task flags. If the guard
-    // unexpectedly remains closed in a hunt, these fields tell us whether
-    // the singleton pointer resolves to the real GameSys object.
+
     const std::uint8_t pre_flag = memory.load8(game_sys + 0x6AF0Cu);
     const std::uint16_t stage_id = memory.load16(game_sys + 0x6AF0Eu);
     const std::uint8_t map_id = memory.load8(game_sys + 0x6AF10u);
     const std::uint16_t mission_id = memory.load16(game_sys + 0x6AF12u);
     const std::uint32_t flags = memory.load32(game_sys + kGameSysFlags);
+    const bool lobby_task = (flags & kGameSysFlagLobbyTask) != 0u;
+    const bool game_task_flag = (flags & kGameSysFlagGameTask) != 0u;
+
+    // GameTask is a Singleton<GameTask> derived from TaskBase. During a hunt,
+    // its singleton must also appear in TaskManager::active[4]. This avoids
+    // depending exclusively on GameSys::gameSysFlags, which is zero in the
+    // observed runtime even while the gameplay camera callback is running.
+    std::uint32_t game_task = 0u;
+    if (MHF_MHFU_GAME_TASK_SINGLETON != 0u &&
+        memory.contains(MHF_MHFU_GAME_TASK_SINGLETON, 4u)) {
+        game_task = memory.load32(MHF_MHFU_GAME_TASK_SINGLETON);
+    }
+
+    std::uint32_t task_manager = 0u;
+    std::uint32_t active_tasks[4]{};
+    bool game_task_active = false;
+    if (MHF_MHFU_TASK_MANAGER_SINGLETON != 0u &&
+        memory.contains(MHF_MHFU_TASK_MANAGER_SINGLETON, 4u)) {
+        task_manager = memory.load32(MHF_MHFU_TASK_MANAGER_SINGLETON);
+        if (game_task != 0u && range_ok(memory, game_task, 0u, 0x18u) &&
+            range_ok(memory, task_manager, 0u, sizeof(active_tasks))) {
+            for (std::size_t i = 0; i < 4u; ++i) {
+                active_tasks[i] = memory.load32(task_manager + static_cast<std::uint32_t>(i * 4u));
+                game_task_active = game_task_active || active_tasks[i] == game_task;
+            }
+        }
+    }
+
+    std::uint32_t system = 0u;
+    if (MHF_MHFU_SYSTEM_SINGLETON != 0u &&
+        memory.contains(MHF_MHFU_SYSTEM_SINGLETON, 4u)) {
+        system = memory.load32(MHF_MHFU_SYSTEM_SINGLETON);
+    }
+
     char reason[192]{};
     std::snprintf(reason, sizeof(reason),
-                  "GameSys slot=0x%08X ptr=0x%08X pre=%u stage=%u map=%u mission=%u "
-                  "flags=0x%08X GAME_TASK=%u LOBBY_TASK=%u",
-                  static_cast<unsigned>(MHF_MHFU_GAME_SYS_SINGLETON),
+                  "GS=%08X sys=%08X pre=%u stg=%u map=%u mis=%u fl=%08X G=%u L=%u "
+                  "GT=%08X TM=%08X active=(%08X,%08X,%08X,%08X) live=%u",
                   static_cast<unsigned>(game_sys),
+                  static_cast<unsigned>(system),
                   static_cast<unsigned>(pre_flag),
                   static_cast<unsigned>(stage_id),
                   static_cast<unsigned>(map_id),
                   static_cast<unsigned>(mission_id),
                   static_cast<unsigned>(flags),
-                  static_cast<unsigned>((flags & kGameSysFlagGameTask) != 0u),
-                  static_cast<unsigned>((flags & kGameSysFlagLobbyTask) != 0u));
+                  static_cast<unsigned>(game_task_flag),
+                  static_cast<unsigned>(lobby_task),
+                  static_cast<unsigned>(game_task),
+                  static_cast<unsigned>(task_manager),
+                  static_cast<unsigned>(active_tasks[0]),
+                  static_cast<unsigned>(active_tasks[1]),
+                  static_cast<unsigned>(active_tasks[2]),
+                  static_cast<unsigned>(active_tasks[3]),
+                  static_cast<unsigned>(game_task_active));
     camera_trace(reason);
-    return (flags & kGameSysFlagGameTask) != 0u &&
-           (flags & kGameSysFlagLobbyTask) == 0u;
+
+    if (lobby_task) return false;
+    return game_task_flag || game_task_active;
 }
 
 float load_float(const psprecomp::GuestMemory &memory, std::uint32_t address) {
