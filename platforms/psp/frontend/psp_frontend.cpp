@@ -1407,6 +1407,25 @@ ControllerState map_input(const host::GamepadState &g, bool analog_camera) {
     s.ly = axis(g.left_y);
     s.rx = std::clamp(g.right_x, -1.0f, 1.0f);
     s.ry = std::clamp(g.right_y, -1.0f, 1.0f);
+    if (std::getenv("MHF_CAMERA_LOG") != nullptr) {
+        // Trace the exact boundary between SDL's GamepadState and the PSP runtime.
+        // This distinguishes an SDL polling issue from a camera-hook/runtime-state issue.
+        static bool have_trace = false;
+        static float last_rx = 0.0f, last_ry = 0.0f;
+        static bool last_analog_camera = false;
+        if (!have_trace || std::fabs(s.rx - last_rx) >= 0.05f ||
+            std::fabs(s.ry - last_ry) >= 0.05f || analog_camera != last_analog_camera) {
+            std::fprintf(stderr,
+                "[frontend-pad] SDL right=(%+.3f,%+.3f) -> runtime rx/ry=(%+.3f,%+.3f) analog_camera=%u\\n",
+                static_cast<double>(g.right_x), static_cast<double>(g.right_y),
+                static_cast<double>(s.rx), static_cast<double>(s.ry),
+                analog_camera ? 1u : 0u);
+            last_rx = s.rx;
+            last_ry = s.ry;
+            last_analog_camera = analog_camera;
+            have_trace = true;
+        }
+    }
     return s;
 }
 
