@@ -134,8 +134,8 @@ bool configure_automatic_logging() {
     static std::FILE *session_stdout = nullptr;
     static std::FILE *session_stderr = nullptr;
 #ifdef _WIN32
-    // GUI-subsystem processes may start without usable console descriptors.
-    // freopen assigns the CRT streams directly to the session log.
+    // Redirect the normal CRT streams before detaching from the console.
+    // If either redirection fails, keep the console attached for diagnostics.
     if (_wfreopen_s(&session_stdout, log_path.c_str(), L"ab", stdout) != 0 ||
         _wfreopen_s(&session_stderr, log_path.c_str(), L"ab", stderr) != 0) {
         return false;
@@ -283,9 +283,9 @@ int main(int argc, char **argv) {
     try {
         log_ready = configure_automatic_logging();
     } catch (const std::exception &e) {
-        std::fprintf(stderr, "[mhfu] automatic logging setup failed: %s\\n", e.what());
+        std::fprintf(stderr, "[mhfu] automatic logging setup failed: %s\n", e.what());
     } catch (...) {
-        std::fprintf(stderr, "[mhfu] automatic logging setup failed with an unknown error\\n");
+        std::fprintf(stderr, "[mhfu] automatic logging setup failed with an unknown error\n");
     }
 #ifdef _WIN32
     // Detach only after stdout/stderr have been redirected. If log setup fails,
