@@ -257,7 +257,8 @@ bool special_player_state(const psprecomp::GuestMemory &memory, std::uint32_t pl
 
 bool standard_camera_context(const psprecomp::GuestMemory &memory, std::uint32_t sub_camera,
                              std::uint32_t camera, std::uint32_t &area_out,
-                             std::uint32_t &player_out) {
+                             std::uint32_t &player_out, const char *&reject_reason) {
+    reject_reason = "unknown context rejection";
     if (!range_ok(memory, camera, kCameraAreaSubCameraId, 1u) ||
         !range_ok(memory, camera, kCameraAreaConfig, 4u) ||
         !range_ok(memory, camera, kCameraPlayer, 4u) ||
@@ -269,43 +270,81 @@ bool standard_camera_context(const psprecomp::GuestMemory &memory, std::uint32_t
         !range_ok(memory, camera, 0xDC4u, 1u) ||
         !range_ok(memory, sub_camera, kSubCameraCurrentId, 1u) ||
         !range_ok(memory, sub_camera, kSubCameraState, 1u)) {
+        reject_reason = "camera/subcamera field outside guest memory";
         return false;
     }
 
-    if (memory.load8(camera + kCameraAreaSubCameraId) != 0u ||
-        memory.load8(camera + kCameraIsChangingArea) != 0u ||
-        memory.load8(camera + kCameraWyvernFindPlayer) != 0u) {
+    if (memory.load8(camera + kCameraAreaSubCameraId) != 0u) {
+        reject_reason = "area_sub_camera_id is nonzero";
+        return false;
+    }
+    if (memory.load8(camera + kCameraIsChangingArea) != 0u) {
+        reject_reason = "camera is changing area";
+        return false;
+    }
+    if (memory.load8(camera + kCameraWyvernFindPlayer) != 0u) {
+        reject_reason = "wyvern-find-player camera mode is active";
         return false;
     }
 
     const std::uint8_t last_sub_camera = memory.load8(camera + kCameraLastSubCameraId);
-    if (last_sub_camera != 0u) return false;
-
-    if (memory.load8(sub_camera + kSubCameraCurrentId) != 0xFFu ||
-        memory.load8(sub_camera + kSubCameraState) != 0u) {
+    if (last_sub_camera != 0u) {
+        reject_reason = "last_sub_camera_id is nonzero";
         return false;
     }
 
-    if (special_sub_camera_active(memory, camera)) return false;
+    const std::uint8_t current_id = memory.load8(sub_camera + kSubCameraCurrentId);
+    const std::uint8_t state = memory.load8(sub_camera + kSubCameraState);
+    if (current_id != 0xFFu) {
+        reject_reason = "standard subcamera current_id is not 0xFF";
+        return false;
+    }
+    if (state != 0u) {
+        reject_reason = "standard subcamera state is nonzero";
+        return false;
+    }
+
+    for (const std::uint32_t id : {3u, 4u, 5u}) {
+        const std::uint32_t active = camera + kCameraFromSubCamera + id * kSubCameraStride + kSubCameraIsActive;
+        if (!memory.contains(active, 1u)) {
+            reject_reason = "special subcamera active flag outside guest memory";
+            return false;
+        }
+        if (memory.load8(active) != 0u) {
+            reject_reason = id == 3u ? "PCHNGR subcamera is active" :
+                            id == 4u ? "PLAYER_EX subcamera is active" : "DEMO subcamera is active";
+            return false;
+        }
+    }
 
     const std::uint8_t active_sub_camera = memory.load8(camera + 0xDC4u);
     if (active_sub_camera == 3u || active_sub_camera == 4u || active_sub_camera == 5u) {
+        reject_reason = "active subcamera id is a special mode";
         return false;
     }
 
     area_out = memory.load32(camera + kCameraAreaConfig);
     player_out = memory.load32(camera + kCameraPlayer);
-    if (area_out == 0u || player_out == 0u ||
-        !range_ok(memory, area_out, kAreaHeightDefinition + kFollowEntriesOffset +
-                                       kFollowEntryCount * kFollowEntryStride, 1u)) {
+    if (area_out == 0u || player_out == 0u) {
+        reject_reason = "area or player pointer is null";
+        return false;
+    }
+    if (!range_ok(memory, area_out, kAreaHeightDefinition + kFollowEntriesOffset +
+                                    kFollowEntryCount * kFollowEntryStride, 1u)) {
+        reject_reason = "area follow-profile structure outside guest memory";
         return false;
     }
 
-    // Only standard follow areas are eligible. Fixed pans, rails and offset pans
-    // keep their original camera path, just like scripted and special cameras.
-    if (memory.load8(area_out + kAreaMoveType) != 0u) return false;
-    if (is_lobby_or_unknown(memory)) return false;
+    if (memory.load8(area_out + kAreaMoveType) != 0u) {
+        reject_reason = "area move type is not standard follow";
+        return false;
+    }
+    if (is_lobby_or_unknown(memory)) {
+        reject_reason = "GameSys singleton validation rejected context (or lobby flag set)";
+        return false;
+    }
 
+    reject_reason = nullptr;
     return true;
 }
 
@@ -382,8 +421,11 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
 
     std::uint32_t area = 0u;
     std::uint32_t player = 0u;
-    if (!standard_camera_context(memory, sub_camera, camera, area, player)) {
-        fallback(runtime, context, original, "fallback: standard camera context rejected (subcamera, area, player, lobby or singleton check)");
+    const char *context_rejection = nullptr;
+    if (!standard_camera_context(memory, sub_camera, camera, area, player, context_rejection)) {
+        char message[192]{};
+        std::snprintf(message, sizeof(message), "fallback: standard context rejected: %s", context_rejection ? context_rejection : "unspecified");
+        fallback(runtime, context, original, message);
         return;
     }
     if (special_player_state(memory, player, std_data)) {
