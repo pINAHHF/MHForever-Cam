@@ -142,6 +142,8 @@ struct OrbitState {
 
 OrbitState g_orbit;
 
+void fallback(Runtime &runtime, Context &context, GuestFunction original, const char *reason);
+
 bool range_ok(const psprecomp::GuestMemory &memory, std::uint32_t base,
               std::uint32_t offset, std::size_t length) {
     if (base == 0u || offset > UINT32_MAX - base) return false;
@@ -518,8 +520,7 @@ bool capture_offset_pan_orbit(OrbitState &state, const psprecomp::GuestMemory &m
 
 void replace_offset_pan_camera(Runtime &runtime, Context &context, GuestFunction original,
                                std::uint32_t std_sub_camera, std::uint32_t camera,
-                               std::uint32_t area, std::uint32_t player,
-                               std::uint32_t std_data) {
+                               std::uint32_t area, std::uint32_t player) {
     auto &memory = runtime.memory();
     const std::uint32_t stg_sub_camera = camera + kCameraFromSubCamera + 2u * kSubCameraStride;
     const std::uint32_t stg_data = stg_sub_camera + kSubCameraData;
@@ -693,7 +694,7 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
 
     if (area_sub_id == 2u && move_type == 3u) {
         replace_offset_pan_camera(runtime, context, original, sub_camera, camera,
-                                  current_area, current_player, std_data);
+                                  current_area, current_player);
         return;
     }
 
