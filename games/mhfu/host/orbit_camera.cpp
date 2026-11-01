@@ -9,6 +9,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -26,10 +27,17 @@ bool camera_trace_enabled() {
 
 void camera_trace(const char *reason) {
     if (!camera_trace_enabled()) return;
-    static char previous[192]{};
-    if (std::strcmp(previous, reason) == 0) return;
-    std::snprintf(previous, sizeof(previous), "%s", reason);
-    std::fprintf(stderr, "[mhfu-camera] %s\n", reason);
+    static std::array<std::array<char, 192>, 16> seen{};
+    for (const auto &entry : seen) {
+        if (entry[0] != '\0' && std::strcmp(entry.data(), reason) == 0) return;
+    }
+    for (auto &entry : seen) {
+        if (entry[0] == '\0') {
+            std::snprintf(entry.data(), entry.size(), "%s", reason);
+            std::fprintf(stderr, "[mhfu-camera] %s\n", reason);
+            return;
+        }
+    }
 }
 
 constexpr float kPi = 3.14159265358979323846f;
