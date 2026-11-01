@@ -816,6 +816,38 @@ void fallback(Runtime &runtime, Context &context, GuestFunction original, const 
     if (original != nullptr) original(runtime, context);
 }
 
+void sync_standard_orbit_yaw_from_native(
+    Runtime &runtime, std::uint32_t camera, std::uint32_t std_data) {
+    auto &memory = runtime.memory();
+    if (!g_orbit.active || g_orbit.mode != kOrbitModeStandard ||
+        g_orbit.camera != camera ||
+        !range_ok(memory, std_data, kStdRotation, 2u)) {
+        return;
+    }
+
+    const auto native_rotation =
+        static_cast<std::int16_t>(memory.load16(std_data + kStdRotation));
+    const float native_yaw = wrap_angle(
+        static_cast<float>(native_rotation) / kAngleUnitsPerRadian);
+    if (!std::isfinite(native_yaw)) return;
+
+    g_orbit.yaw = native_yaw;
+    g_orbit.last_update_us = runtime.now_us();
+
+    if (camera_trace_enabled()) {
+        static std::uint64_t last_sync_trace_us = 0u;
+        const std::uint64_t now = runtime.now_us();
+        if (last_sync_trace_us == 0u || now < last_sync_trace_us ||
+            now - last_sync_trace_us >= 500'000u) {
+            std::fprintf(stderr,
+                "[mhfu-camera] protected-state yaw sync native_yaw=%.3f yaw_units=%u\n",
+                static_cast<double>(native_yaw),
+                static_cast<unsigned>(static_cast<std::uint16_t>(native_rotation)));
+            last_sync_trace_us = now;
+        }
+    }
+}
+
 void update_standard_orbit_before_native(Runtime &runtime, std::uint32_t camera) {
     auto &memory = runtime.memory();
     const std::uint32_t sub_camera = camera + kCameraFromSubCamera;
@@ -874,9 +906,12 @@ void update_standard_orbit_before_native(Runtime &runtime, std::uint32_t camera)
     }
 
     if (special_player_action(memory, player)) {
+        // Native camera actions can change yaw temporarily. Capture the live
+        // native rotation so resuming standard orbit cannot snap to stale yaw.
+        sync_standard_orbit_yaw_from_native(runtime, camera, std_data);
         restore_standard_camera_profile(memory);
         runtime.note_analog_camera_update(0u);
-        camera_trace("STD-before-native deferred: protected player action; orbit retained");
+        camera_trace("STD-before-native deferred: protected player action; native yaw synchronized");
         return;
     }
 
@@ -1116,18 +1151,20 @@ void apply_standard_orbit_pitch_after_native(Runtime &runtime, std::uint32_t cam
         std::clamp(g_orbit.elevation, kMinElevation, kMaxElevation);
     const float desired_vertical = std::sin(desired_elevation) * distance;
 
-    // The original STD solver raises goal_position.y when the camera would
-    // cross the floor (ground hit + the area's min_height). Its ground-adjusted
-    // flag survives into the STG callback, so reuse that exact safe boundary
-    // while keeping the custom pitch responsive everywhere else.
-    float corrected_y = target_y + desired_vertical;
+    // goal_position.y is calculated by the native STD floor solver every
+    // frame. It equals the requested pitch in open space and is raised to
+    // ground hit + min_height when the camera would penetrate the floor.
+    // Do not gate this boundary on is_ground_adj: the final native position
+    // clamp can protect the floor without setting that flag.
+    const float requested_y = target_y + desired_vertical;
     const bool native_ground_adjusted =
         memory.load8(std_data + kStdIsGroundAdjusted) != 0u;
     const float native_safe_goal_y =
         load_float(memory, std_data + kStdGoalPosition + 4u);
-    if (native_ground_adjusted && std::isfinite(native_safe_goal_y)) {
-        corrected_y = std::max(corrected_y, native_safe_goal_y);
-    }
+    const float corrected_y = std::isfinite(native_safe_goal_y)
+        ? std::max(requested_y, native_safe_goal_y)
+        : requested_y;
+    const bool floor_clamped = corrected_y > requested_y + 0.5f;
 
     const float corrected_vertical = corrected_y - target_y;
     if (!std::isfinite(corrected_vertical) ||
@@ -1135,17 +1172,28 @@ void apply_standard_orbit_pitch_after_native(Runtime &runtime, std::uint32_t cam
         return;
     }
 
-    // Rebuild the horizontal radius from the resolved native distance after
-    // the floor clamp. Keep its resolved XZ direction so wall avoidance stays
-    // intact; only the unsafe downward component is shortened.
-    const float corrected_horizontal =
-        std::sqrt(std::max(0.0f, distance * distance -
-                                   corrected_vertical * corrected_vertical));
-    const float horizontal_scale = corrected_horizontal / horizontal;
-    if (!std::isfinite(horizontal_scale)) return;
+    float corrected_horizontal = horizontal;
+    float corrected_x = target_x + offset_x;
+    float corrected_z = target_z + offset_z;
 
-    const float corrected_x = target_x + offset_x * horizontal_scale;
-    const float corrected_z = target_z + offset_z * horizontal_scale;
+    if (floor_clamped) {
+        // Keep the native collision-resolved XZ position when the floor
+        // rejects the requested pitch. Sync the stored elevation to this
+        // safe view so holding down cannot accumulate hidden pitch.
+        g_orbit.elevation = std::clamp(
+            std::atan2(corrected_vertical, corrected_horizontal),
+            kMinElevation, kMaxElevation);
+    } else {
+        // In free space, preserve the existing constant-radius orbit and
+        // exact pitch response.
+        corrected_horizontal =
+            std::sqrt(std::max(0.0f, distance * distance -
+                                       corrected_vertical * corrected_vertical));
+        const float horizontal_scale = corrected_horizontal / horizontal;
+        if (!std::isfinite(horizontal_scale)) return;
+        corrected_x = target_x + offset_x * horizontal_scale;
+        corrected_z = target_z + offset_z * horizontal_scale;
+    }
     if (!std::isfinite(corrected_x) || !std::isfinite(corrected_y) ||
         !std::isfinite(corrected_z)) {
         return;
@@ -1163,11 +1211,16 @@ void apply_standard_orbit_pitch_after_native(Runtime &runtime, std::uint32_t cam
             const float before_elevation = std::atan2(offset_y, horizontal);
             std::fprintf(stderr,
                 "[mhfu-camera] STD-post-native pitch desired=%.3f before=%.3f "
-                "after=%.3f resolved_distance=%.1f\n",
+                "after=%.3f resolved_distance=%.1f ground_adjusted=%u "
+                "floor_clamp=%u goal_y=%.1f corrected_y=%.1f\n",
                 static_cast<double>(desired_elevation),
                 static_cast<double>(before_elevation),
                 static_cast<double>(std::atan2(corrected_vertical, corrected_horizontal)),
-                static_cast<double>(distance));
+                static_cast<double>(distance),
+                static_cast<unsigned>(native_ground_adjusted),
+                static_cast<unsigned>(floor_clamped),
+                static_cast<double>(native_safe_goal_y),
+                static_cast<double>(corrected_y));
             last_pitch_trace_us = now;
         }
     }
