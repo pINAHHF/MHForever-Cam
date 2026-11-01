@@ -15,7 +15,8 @@
 
 namespace mhf::launcher::update {
 
-inline constexpr const char *kLatestRelease = "https://api.github.com/repos/Mango77x/MHForever/releases/latest";
+// This camera fork must only update from its own releases; the upstream release would overwrite the modified game binary.
+inline constexpr const char *kLatestRelease = "https://api.github.com/repos/pINAHHF/MHForever-Cam/releases/latest";
 
 struct Release {
     std::string version;      // "0.6.3"
