@@ -573,7 +573,12 @@ void replace_offset_pan_camera(Runtime &runtime, Context &context, GuestFunction
         return;
     }
     if (stg_mode != 1u || stg_active == 0u || stg_state != 0u) {
-        fallback(runtime, context, original, "fallback: OFFSET_PAN STG camera is in a transition state");
+        char reason[160]{};
+        std::snprintf(reason, sizeof(reason),
+                      "fallback: OFFSET_PAN STG state active=%u mode=%u state=%u",
+                      static_cast<unsigned>(stg_active), static_cast<unsigned>(stg_mode),
+                      static_cast<unsigned>(stg_state));
+        fallback(runtime, context, original, reason);
         return;
     }
 
