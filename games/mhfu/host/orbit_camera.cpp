@@ -178,14 +178,17 @@ std::uint16_t angle_to_units(float radians) {
 }
 
 
-bool special_sub_camera_active(const psprecomp::GuestMemory &memory, std::uint32_t camera) {
+int active_special_sub_camera(const psprecomp::GuestMemory &memory, std::uint32_t camera) {
     // Camera::cam2view selects DEMO (5), PCHNGR (3), or PLAYER_EX (4).
+    // Return the exact active camera so a fallback can be diagnosed without
+    // changing the stock protection against scripted/aiming camera overrides.
     constexpr std::uint32_t special_ids[] = {3u, 4u, 5u};
     for (const std::uint32_t id : special_ids) {
         const std::uint32_t active = camera + 0xB0u + id * kSubCameraStride + kSubCameraIsActive;
-        if (!memory.contains(active, 1u) || memory.load8(active) != 0u) return true;
+        if (!memory.contains(active, 1u)) return -2;
+        if (memory.load8(active) != 0u) return static_cast<int>(id);
     }
-    return false;
+    return -1;
 }
 
 bool special_player_action(const psprecomp::GuestMemory &memory, std::uint32_t player) {
@@ -545,8 +548,18 @@ void replace_offset_pan_camera(Runtime &runtime, Context &context, GuestFunction
         return;
     }
 
-    if (special_sub_camera_active(memory, camera)) {
-        fallback(runtime, context, original, "fallback: special subcamera active during OFFSET_PAN");
+    const int active_special_id = active_special_sub_camera(memory, camera);
+    if (active_special_id >= 0) {
+        char reason[128]{};
+        std::snprintf(reason, sizeof(reason),
+                      "fallback: special subcamera %d active during OFFSET_PAN",
+                      active_special_id);
+        fallback(runtime, context, original, reason);
+        return;
+    }
+    if (active_special_id == -2) {
+        fallback(runtime, context, original,
+                 "fallback: special subcamera flag outside guest memory during OFFSET_PAN");
         return;
     }
     const std::uint8_t active_camera_id = memory.load8(camera + 0xDC4u);
