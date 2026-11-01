@@ -56,7 +56,6 @@ constexpr std::uint32_t kSubCameraState = 0x9Cu;
 
 constexpr std::uint32_t kCameraWyvernFindPlayer = 0xA81u;
 constexpr std::uint32_t kCameraIsChangingArea = 0xA8Bu;
-constexpr std::uint32_t kCameraLastSubCameraId = 0xA8Cu;
 constexpr std::uint32_t kCameraAreaSubCameraId = 0xA8Du;
 constexpr std::uint32_t kCameraPlayer = 0xA84u;
 constexpr std::uint32_t kCameraAreaConfig = 0xA90u;
@@ -65,8 +64,6 @@ constexpr std::uint32_t kStdIsFalldown = 0x35u;
 constexpr std::uint32_t kStdIsViewBlocked = 0x89u;
 constexpr std::uint32_t kStdKabegiwaTimer = 0x8Bu;
 constexpr std::uint32_t kStdIsKabegiwa = 0x8Cu;
-constexpr std::uint32_t kStdIsShoulderCam = 0x8Fu;
-constexpr std::uint32_t kStdGunTargetingState = 0x91u;
 
 constexpr std::uint32_t kPlayerRotationY = 0x1F4u;
 constexpr std::uint32_t kPlayerPosture = 0x280u;
