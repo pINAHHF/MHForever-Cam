@@ -64,11 +64,14 @@ constexpr std::uint32_t kStdIsFalldown = 0x35u;
 constexpr std::uint32_t kStdIsViewBlocked = 0x89u;
 constexpr std::uint32_t kStdKabegiwaTimer = 0x8Bu;
 constexpr std::uint32_t kStdIsKabegiwa = 0x8Cu;
-constexpr std::uint32_t kStdIsFastRotate = 0x8Eu;
+constexpr std::uint32_t kStdFollowHeightDefinition = 0x6Cu;
 constexpr std::uint32_t kStdFollowHeightEntry = 0x70u;
 constexpr std::uint32_t kStdGoalRotation = 0x80u;
 constexpr std::uint32_t kStdRotation = 0x82u;
+constexpr std::uint32_t kStdIsFastRotate = 0x8Eu;
+constexpr std::uint32_t kFollowHeightEntriesOffset = 0x20u;
 constexpr std::uint32_t kFollowHeightEntrySize = 0x20u;
+constexpr std::uint32_t kFollowHeightEntryCount = 7u;
 constexpr std::uint32_t kFollowHeightYOffset = 0x04u;
 constexpr std::uint32_t kFollowHeightZOffset = 0x08u;
 constexpr std::uint32_t kFollowHeightHeight = 0x10u;
@@ -659,12 +662,26 @@ void replace_standard_view_from_stage(Runtime &runtime, std::uint32_t camera) {
         return;
     }
     const std::uint32_t follow_entry = memory.load32(std_data + kStdFollowHeightEntry);
-    if (follow_entry == 0u ||
-        !range_ok(memory, follow_entry, 0u, kFollowHeightEntrySize)) {
+    const std::uint32_t follow_definition =
+        memory.load32(std_data + kStdFollowHeightDefinition);
+    constexpr std::uint32_t kFollowHeightDefinitionSize =
+        kFollowHeightEntriesOffset + kFollowHeightEntryCount * kFollowHeightEntrySize;
+    const bool follow_entry_is_area_profile =
+        follow_definition != 0u &&
+        range_ok(memory, follow_definition, 0u, kFollowHeightDefinitionSize) &&
+        follow_entry >= follow_definition + kFollowHeightEntriesOffset &&
+        follow_entry < follow_definition + kFollowHeightDefinitionSize &&
+        ((follow_entry - (follow_definition + kFollowHeightEntriesOffset)) %
+         kFollowHeightEntrySize) == 0u &&
+        range_ok(memory, follow_entry, 0u, kFollowHeightEntrySize);
+    if (!follow_entry_is_area_profile) {
+        // During fall/kabegiwa camera states the game temporarily points this
+        // field at standalone special profiles, not at the area's writable
+        // seven-entry table. Never mutate those shared special presets.
         restore_standard_camera_profile(memory);
         g_orbit = {};
         runtime.note_analog_camera_update(0u);
-        camera_trace("STD-after-STG rejected: follow-height entry is outside guest memory");
+        camera_trace("STD-after-STG deferred: follow-height entry is a special profile");
         return;
     }
 
