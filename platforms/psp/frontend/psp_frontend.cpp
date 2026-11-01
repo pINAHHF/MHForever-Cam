@@ -1416,7 +1416,7 @@ ControllerState map_input(const host::GamepadState &g, bool analog_camera) {
         if (!have_trace || std::fabs(s.rx - last_rx) >= 0.05f ||
             std::fabs(s.ry - last_ry) >= 0.05f || analog_camera != last_analog_camera) {
             std::fprintf(stderr,
-                "[frontend-pad] SDL right=(%+.3f,%+.3f) -> runtime rx/ry=(%+.3f,%+.3f) analog_camera=%u\\n",
+                "[frontend-pad] SDL right=(%+.3f,%+.3f) -> runtime rx/ry=(%+.3f,%+.3f) analog_camera=%u\n",
                 static_cast<double>(g.right_x), static_cast<double>(g.right_y),
                 static_cast<double>(s.rx), static_cast<double>(s.ry),
                 analog_camera ? 1u : 0u);
