@@ -122,9 +122,11 @@ constexpr std::uint32_t kPlFlagScopeCam = 1u << 12u;
 constexpr std::uint32_t kPlFlagShoulderCam = 1u << 15u;
 constexpr std::uint32_t kPlFlagFishing = 1u << 19u;
 
-constexpr float kDeadzone = 0.16f;
-constexpr float kYawSpeed = 2.8f;
-constexpr float kPitchSpeed = 2.2f;
+// A radial deadzone keeps diagonal input continuous instead of zeroing
+// one axis independently when the other axis is pushed farther.
+constexpr float kDeadzone = 0.08f;
+constexpr float kYawSpeed = 4.8f;
+constexpr float kPitchSpeed = 3.6f;
 constexpr float kMinElevation = -1.15f;
 constexpr float kMaxElevation = 1.15f;
 constexpr float kMinOrbitDistance = 80.0f;
@@ -344,12 +346,25 @@ void store_float(psprecomp::GuestMemory &memory, std::uint32_t address, float va
 // adjustments without allowing that recenter to take ownership of the view.
 
 
-float shape_axis(float value) {
-    value = std::clamp(value, -1.0f, 1.0f);
-    const float magnitude = std::fabs(value);
-    if (magnitude <= kDeadzone) return 0.0f;
-    const float shaped = (magnitude - kDeadzone) / (1.0f - kDeadzone);
-    return std::copysign(shaped, value);
+struct ShapedStick {
+    float x{};
+    float y{};
+};
+
+ShapedStick shape_stick(float x, float y) {
+    x = std::clamp(x, -1.0f, 1.0f);
+    y = std::clamp(y, -1.0f, 1.0f);
+
+    const float magnitude = std::hypot(x, y);
+    if (!std::isfinite(magnitude) || magnitude <= kDeadzone) return {};
+
+    // Clamp only the vector length, not each component. This preserves the
+    // stick's direction while mapping the circular deadzone to full range.
+    const float limited_magnitude = std::min(magnitude, 1.0f);
+    const float shaped_magnitude =
+        (limited_magnitude - kDeadzone) / (1.0f - kDeadzone);
+    const float scale = shaped_magnitude / magnitude;
+    return {x * scale, y * scale};
 }
 
 float wrap_angle(float angle) {
@@ -702,8 +717,9 @@ void replace_offset_pan_camera(Runtime &runtime, Context &context, GuestFunction
     }
 
     const ControllerState &pad = controller_state(runtime);
-    const float dx = shape_axis(pad.rx);
-    const float dy = shape_axis(pad.ry);
+    const ShapedStick stick = shape_stick(pad.rx, pad.ry);
+    const float dx = stick.x;
+    const float dy = stick.y;
     // R1 remains exclusively the game's item-selector button; it never recenters
     // or otherwise modifies the custom camera.
     g_orbit.yaw = wrap_angle(g_orbit.yaw - dx * kYawSpeed * dt);
@@ -953,8 +969,9 @@ void update_standard_orbit_before_native(Runtime &runtime, std::uint32_t camera)
     }
 
     const ControllerState &pad = controller_state(runtime);
-    const float dx = shape_axis(pad.rx);
-    const float dy = shape_axis(pad.ry);
+    const ShapedStick stick = shape_stick(pad.rx, pad.ry);
+    const float dx = stick.x;
+    const float dy = stick.y;
     // R1 is not a camera input. The native game keeps it for item selection.
     g_orbit.yaw = wrap_angle(g_orbit.yaw - dx * kYawSpeed * dt);
     g_orbit.elevation = std::clamp(g_orbit.elevation + dy * kPitchSpeed * dt,
