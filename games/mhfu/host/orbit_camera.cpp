@@ -1217,9 +1217,17 @@ void replace_stage_camera(Runtime &runtime, Context &context, GuestFunction orig
             runtime.note_analog_camera_update(0u);
         }
 
-        // The game runs cam_sub_std before cam_sub_stg. The STG callback is
-        // therefore the dependable post-update point for a normal follow view,
-        // even in transitions where the STD replacement is not entered.
+        // The camera dispatcher runs SubCamera::cam_sub() in ascending ID
+        // order: STD (0) is processed before STG (2). On US MHFU the STD
+        // replacement is not reliably reached every frame, while this STG
+        // callback is. Use this post-STD point to seed/update the standard
+        // follow profile from the now-resolved native camera vectors. The
+        // profile is consumed by the next STD update, preserving native
+        // collision handling and scripted-camera guards.
+        if (area_sub_id == 0u) {
+            update_standard_orbit_before_native(runtime, camera);
+        }
+
         if (original != nullptr) original(runtime, context);
         if (area_sub_id != 0u && g_orbit.active &&
             g_orbit.mode == kOrbitModeStandard) {
