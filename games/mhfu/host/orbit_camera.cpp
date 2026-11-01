@@ -82,6 +82,8 @@ constexpr std::uint32_t kQuestMissionFlagMask =
     (1u << 26u) | (1u << 29u) | (1u << 30u);
 
 constexpr std::uint32_t kStdIsFalldown = 0x35u;
+constexpr std::uint32_t kStdGoalPosition = 0x40u;
+constexpr std::uint32_t kStdIsGroundAdjusted = 0x90u;
 constexpr std::uint32_t kStdIsViewBlocked = 0x89u;
 constexpr std::uint32_t kStdKabegiwaTimer = 0x8Bu;
 constexpr std::uint32_t kStdIsKabegiwa = 0x8Cu;
@@ -396,32 +398,57 @@ bool special_player_action(const psprecomp::GuestMemory &memory, std::uint32_t p
     if (!range_ok(memory, player, kPlayerFlags, 4u) ||
         !range_ok(memory, player, kPlayerActionType, 2u) ||
         !range_ok(memory, player, kPlayerRideState, 1u) ||
-        !range_ok(memory, player, kPlayerPosture, 1u) ||
         !range_ok(memory, player, kPlayerDialogTimer, 1u) ||
         !range_ok(memory, player, kPlayerScopeAimIncrement, 1u)) {
+        camera_trace("protected player action: required player fields are unreadable");
         return true;
     }
 
     const std::uint8_t action_type = memory.load8(player + kPlayerActionType);
+    const std::uint8_t action_id = memory.load8(player + kPlayerActionId);
+    const std::uint8_t ride_state = memory.load8(player + kPlayerRideState);
+    const std::uint8_t dialog_timer = memory.load8(player + kPlayerDialogTimer);
+    const std::uint8_t scope_aim = memory.load8(player + kPlayerScopeAimIncrement);
+    const std::uint32_t player_flags = memory.load32(player + kPlayerFlags);
+
     // NORMAL and ATTACK are ordinary hunt states. Damage, death, demos,
     // egg-carrying, chat, kitchen and farm actions retain the stock camera.
-    if (action_type != 0u && action_type != 1u) return true;
-
-    const std::uint8_t action_id = memory.load8(player + kPlayerActionId);
-    if (action_id == 17u || action_id == 27u || action_id == 30u || action_id == 58u) {
-        return true; // hang, climb-from-hang, finish-climb-from-hang
-    }
-
-    if (memory.load8(player + kPlayerRideState) != 0u ||
-        memory.load8(player + kPlayerPosture) == 2u ||
-        memory.load8(player + kPlayerDialogTimer) != 0u ||
-        memory.load8(player + kPlayerScopeAimIncrement) != 0u) {
+    if (action_type != 0u && action_type != 1u) {
+        char reason[160]{};
+        std::snprintf(reason, sizeof(reason),
+                      "protected action type=%u id=%u",
+                      static_cast<unsigned>(action_type),
+                      static_cast<unsigned>(action_id));
+        camera_trace(reason);
         return true;
     }
 
-    const std::uint32_t player_flags = memory.load32(player + kPlayerFlags);
-    return (player_flags & (kPlFlagSupplyBoxOpen | kPlFlagDeliveryBoxOpen |
-                            kPlFlagScopeCam | kPlFlagShoulderCam | kPlFlagFishing)) != 0u;
+    // These IDs belong to NORMAL action states (hang/climb), not to ATTACK.
+    // Action IDs are reused between action types, so applying this list to an
+    // attack animation can accidentally freeze the custom camera.
+    if (action_type == 0u &&
+        (action_id == 17u || action_id == 27u || action_id == 30u || action_id == 58u)) {
+        camera_trace("protected NORMAL hang/climb action");
+        return true;
+    }
+
+    if (ride_state != 0u || dialog_timer != 0u || scope_aim != 0u ||
+        (player_flags & (kPlFlagSupplyBoxOpen | kPlFlagDeliveryBoxOpen |
+                         kPlFlagScopeCam | kPlFlagShoulderCam | kPlFlagFishing)) != 0u) {
+        char reason[192]{};
+        std::snprintf(reason, sizeof(reason),
+                      "protected auxiliary state ride=%u dialog=%u scope=%u flags=%08X",
+                      static_cast<unsigned>(ride_state),
+                      static_cast<unsigned>(dialog_timer),
+                      static_cast<unsigned>(scope_aim),
+                      static_cast<unsigned>(player_flags));
+        camera_trace(reason);
+        return true;
+    }
+
+    // posture==2 is the ordinary FLY posture, not a scripted-camera state.
+    // Do not use it as a blanket camera lock during otherwise valid attacks.
+    return false;
 }
 
 
@@ -1046,7 +1073,9 @@ void apply_standard_orbit_pitch_after_native(Runtime &runtime, std::uint32_t cam
         !range_ok(memory, std_data, kStdIsFalldown, 1u) ||
         !range_ok(memory, std_data, kStdIsViewBlocked, 1u) ||
         !range_ok(memory, std_data, kStdIsKabegiwa, 1u) ||
-        !range_ok(memory, std_data, kStdKabegiwaTimer, 1u)) {
+        !range_ok(memory, std_data, kStdKabegiwaTimer, 1u) ||
+        !range_ok(memory, std_data, kStdGoalPosition + 4u, 4u) ||
+        !range_ok(memory, std_data, kStdIsGroundAdjusted, 1u)) {
         return;
     }
 
@@ -1086,13 +1115,37 @@ void apply_standard_orbit_pitch_after_native(Runtime &runtime, std::uint32_t cam
     // native update, while preserving its collision-adjusted radius and yaw.
     const float desired_elevation =
         std::clamp(g_orbit.elevation, kMinElevation, kMaxElevation);
-    const float desired_horizontal = std::cos(desired_elevation) * distance;
     const float desired_vertical = std::sin(desired_elevation) * distance;
-    const float horizontal_scale = desired_horizontal / horizontal;
-    if (!std::isfinite(horizontal_scale) || !std::isfinite(desired_vertical)) return;
+
+    // The original STD solver raises goal_position.y when the camera would
+    // cross the floor (ground hit + the area's min_height). Its ground-adjusted
+    // flag survives into the STG callback, so reuse that exact safe boundary
+    // while keeping the custom pitch responsive everywhere else.
+    float corrected_y = target_y + desired_vertical;
+    const bool native_ground_adjusted =
+        memory.load8(std_data + kStdIsGroundAdjusted) != 0u;
+    const float native_safe_goal_y =
+        load_float(memory, std_data + kStdGoalPosition + 4u);
+    if (native_ground_adjusted && std::isfinite(native_safe_goal_y)) {
+        corrected_y = std::max(corrected_y, native_safe_goal_y);
+    }
+
+    const float corrected_vertical = corrected_y - target_y;
+    if (!std::isfinite(corrected_vertical) ||
+        std::fabs(corrected_vertical) >= distance) {
+        return;
+    }
+
+    // Rebuild the horizontal radius from the resolved native distance after
+    // the floor clamp. Keep its resolved XZ direction so wall avoidance stays
+    // intact; only the unsafe downward component is shortened.
+    const float corrected_horizontal =
+        std::sqrt(std::max(0.0f, distance * distance -
+                                   corrected_vertical * corrected_vertical));
+    const float horizontal_scale = corrected_horizontal / horizontal;
+    if (!std::isfinite(horizontal_scale)) return;
 
     const float corrected_x = target_x + offset_x * horizontal_scale;
-    const float corrected_y = target_y + desired_vertical;
     const float corrected_z = target_z + offset_z * horizontal_scale;
     if (!std::isfinite(corrected_x) || !std::isfinite(corrected_y) ||
         !std::isfinite(corrected_z)) {
