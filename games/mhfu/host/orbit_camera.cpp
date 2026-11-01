@@ -1166,7 +1166,7 @@ void apply_standard_orbit_pitch_after_native(Runtime &runtime, std::uint32_t cam
                 "after=%.3f resolved_distance=%.1f\n",
                 static_cast<double>(desired_elevation),
                 static_cast<double>(before_elevation),
-                static_cast<double>(std::atan2(desired_vertical, corrected_horizontal)),
+                static_cast<double>(std::atan2(corrected_vertical, corrected_horizontal)),
                 static_cast<double>(distance));
             last_pitch_trace_us = now;
         }
