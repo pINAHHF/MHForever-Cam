@@ -171,49 +171,79 @@ bool is_lobby_or_unknown(const psprecomp::GuestMemory &memory, char *reason,
     std::snprintf(reason, reason_size, "GameSys singleton symbol is disabled");
     return true;
 #else
-    constexpr std::uint32_t slot = MHF_MHFU_GAME_SYS_SINGLETON;
-    if (!memory.contains(slot, 4u)) {
-        std::snprintf(reason, reason_size, "GameSys slot 0x%08X is outside guest memory", slot);
-        return true;
-    }
-    const std::uint32_t game_sys = memory.load32(slot);
-    if (game_sys < 0x08800000u || game_sys >= 0x0A000000u) {
-        std::snprintf(reason, reason_size,
-                      "GameSys slot 0x%08X contains implausible pointer 0x%08X", static_cast<unsigned>(slot), static_cast<unsigned>(game_sys));
-        return true;
-    }
-    if (!range_ok(memory, game_sys, kGameSysFlags, 4u) ||
-        !range_ok(memory, game_sys, 0x28u, 1u) ||
-        !range_ok(memory, game_sys, 0x422u, 1u) ||
-        !range_ok(memory, game_sys, 0x480u, 1u)) {
-        std::snprintf(reason, reason_size,
-                      "GameSys pointer 0x%08X has fields outside guest memory", game_sys);
-        return true;
+    // 0x089C7508 is the exact GameSys::objectPtr address in the MHP2G reference.
+    // 0x089C7628 is the provisional US address, shifted by the observed +0x120
+    // relocation. Test both before treating either as authoritative.
+    constexpr std::uint32_t slots[] = {
+        MHF_MHFU_GAME_SYS_SINGLETON,
+        0x089C7508u,
+    };
+    std::uint32_t seen_slots[2]{};
+    std::uint32_t seen_ptrs[2]{};
+    bool valid[2]{};
+    std::uint8_t player_ids[2]{};
+    std::uint8_t demos[2]{};
+    std::uint8_t galleries[2]{};
+    std::uint32_t flags[2]{};
+
+    for (std::size_t i = 0; i < 2u; ++i) {
+        seen_slots[i] = slots[i];
+        if (i == 1u && slots[i] == slots[0]) continue;
+        if (!memory.contains(slots[i], 4u)) continue;
+
+        const std::uint32_t game_sys = memory.load32(slots[i]);
+        seen_ptrs[i] = game_sys;
+        if (game_sys < 0x08800000u || game_sys >= 0x0A000000u ||
+            !range_ok(memory, game_sys, kGameSysFlags, 4u) ||
+            !range_ok(memory, game_sys, 0x28u, 1u) ||
+            !range_ok(memory, game_sys, 0x422u, 1u) ||
+            !range_ok(memory, game_sys, 0x480u, 1u)) {
+            continue;
+        }
+
+        player_ids[i] = memory.load8(game_sys + 0x28u);
+        demos[i] = memory.load8(game_sys + 0x422u);
+        galleries[i] = memory.load8(game_sys + 0x480u);
+        flags[i] = memory.load32(game_sys + kGameSysFlags);
+        valid[i] = player_ids[i] < 4u && demos[i] <= 1u && galleries[i] <= 1u;
     }
 
-    const std::uint8_t player_id = memory.load8(game_sys + 0x28u);
-    const std::uint8_t is_demo = memory.load8(game_sys + 0x422u);
-    const std::uint8_t is_gallery_task = memory.load8(game_sys + 0x480u);
-    const std::uint32_t flags = memory.load32(game_sys + kGameSysFlags);
-    if (player_id >= 4u || is_demo > 1u || is_gallery_task > 1u) {
-        std::snprintf(reason, reason_size,
-                      "GameSys fields look invalid at 0x%08X (player_id=%u demo=%u gallery=%u flags=0x%08X)",
-                      static_cast<unsigned>(game_sys), static_cast<unsigned>(player_id), static_cast<unsigned>(is_demo), static_cast<unsigned>(is_gallery_task), static_cast<unsigned>(flags));
-        return true;
+    for (std::size_t i = 0; i < 2u; ++i) {
+        if (!valid[i]) continue;
+
+        if (camera_trace_enabled()) {
+            char message[192]{};
+            std::snprintf(message, sizeof(message),
+                          "GameSys candidate accepted: slot=0x%08X ptr=0x%08X player=%u demo=%u gallery=%u flags=0x%08X",
+                          static_cast<unsigned>(seen_slots[i]), static_cast<unsigned>(seen_ptrs[i]),
+                          static_cast<unsigned>(player_ids[i]), static_cast<unsigned>(demos[i]),
+                          static_cast<unsigned>(galleries[i]), static_cast<unsigned>(flags[i]));
+            camera_trace(message);
+        }
+
+        if (demos[i] != 0u || galleries[i] != 0u) {
+            std::snprintf(reason, reason_size,
+                          "GameSys special context at slot 0x%08X (demo=%u gallery=%u)",
+                          static_cast<unsigned>(seen_slots[i]), static_cast<unsigned>(demos[i]),
+                          static_cast<unsigned>(galleries[i]));
+            return true;
+        }
+        if ((flags[i] & kLobbyTaskFlag) != 0u) {
+            std::snprintf(reason, reason_size,
+                          "GameSys lobby flag set at slot 0x%08X (flags=0x%08X)",
+                          static_cast<unsigned>(seen_slots[i]), static_cast<unsigned>(flags[i]));
+            return true;
+        }
+        reason[0] = '\0';
+        return false;
     }
-    if (is_demo != 0u || is_gallery_task != 0u) {
-        std::snprintf(reason, reason_size,
-                      "GameSys is special context at 0x%08X (demo=%u gallery=%u)",
-                      static_cast<unsigned>(game_sys), static_cast<unsigned>(is_demo), static_cast<unsigned>(is_gallery_task));
-        return true;
-    }
-    if ((flags & kLobbyTaskFlag) != 0u) {
-        std::snprintf(reason, reason_size,
-                      "GameSys lobby flag is set at 0x%08X (flags=0x%08X)", static_cast<unsigned>(game_sys), static_cast<unsigned>(flags));
-        return true;
-    }
-    reason[0] = '\0';
-    return false;
+
+    std::snprintf(reason, reason_size,
+                  "no valid GameSys singleton: slot1=0x%08X ptr1=0x%08X player1=%u; slot2=0x%08X ptr2=0x%08X player2=%u",
+                  static_cast<unsigned>(seen_slots[0]), static_cast<unsigned>(seen_ptrs[0]),
+                  static_cast<unsigned>(player_ids[0]), static_cast<unsigned>(seen_slots[1]),
+                  static_cast<unsigned>(seen_ptrs[1]), static_cast<unsigned>(player_ids[1]));
+    return true;
 #endif
 }
 
