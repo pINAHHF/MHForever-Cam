@@ -306,11 +306,15 @@ bool standard_camera_context(const psprecomp::GuestMemory &memory, std::uint32_t
     }
 
     const std::uint8_t area_sub_id = memory.load8(camera + kCameraAreaSubCameraId);
-    const std::uint8_t move_type = memory.load8(memory.load32(camera + kCameraAreaConfig) + kAreaMoveType);
+    const std::uint32_t area_candidate = memory.load32(camera + kCameraAreaConfig);
+    const bool area_type_readable = range_ok(memory, area_candidate, kAreaMoveType, 1u);
+    const std::uint8_t move_type = area_type_readable
+        ? memory.load8(area_candidate + kAreaMoveType) : 0xFFu;
     if (area_sub_id != 0u) {
         std::snprintf(reject_reason, reject_reason_size,
-                      "area_sub_camera_id=%u (STD is 0), area move_type=%u",
-                      area_sub_id, move_type);
+                      "area_sub_camera_id=%u (STD is 0), move_type=%s%u area=0x%08X",
+                      area_sub_id, area_type_readable ? "" : "unreadable/",
+                      move_type, area_candidate);
         return false;
     }
 
