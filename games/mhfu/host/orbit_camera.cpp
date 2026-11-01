@@ -161,10 +161,24 @@ bool is_hunt_camera_context(const psprecomp::GuestMemory &memory) {
         camera_trace("camera task guard: GameSys flags are unreadable");
         return false;
     }
+    // Include the mission identity alongside the task flags. If the guard
+    // unexpectedly remains closed in a hunt, these fields tell us whether
+    // the singleton pointer resolves to the real GameSys object.
+    const std::uint8_t pre_flag = memory.load8(game_sys + 0x6AF0Cu);
+    const std::uint16_t stage_id = memory.load16(game_sys + 0x6AF0Eu);
+    const std::uint8_t map_id = memory.load8(game_sys + 0x6AF10u);
+    const std::uint16_t mission_id = memory.load16(game_sys + 0x6AF12u);
     const std::uint32_t flags = memory.load32(game_sys + kGameSysFlags);
-    char reason[128]{};
+    char reason[192]{};
     std::snprintf(reason, sizeof(reason),
-                  "GameSys flags=0x%08X GAME_TASK=%u LOBBY_TASK=%u",
+                  "GameSys slot=0x%08X ptr=0x%08X pre=%u stage=%u map=%u mission=%u "
+                  "flags=0x%08X GAME_TASK=%u LOBBY_TASK=%u",
+                  static_cast<unsigned>(MHF_MHFU_GAME_SYS_SINGLETON),
+                  static_cast<unsigned>(game_sys),
+                  static_cast<unsigned>(pre_flag),
+                  static_cast<unsigned>(stage_id),
+                  static_cast<unsigned>(map_id),
+                  static_cast<unsigned>(mission_id),
                   static_cast<unsigned>(flags),
                   static_cast<unsigned>((flags & kGameSysFlagGameTask) != 0u),
                   static_cast<unsigned>((flags & kGameSysFlagLobbyTask) != 0u));
