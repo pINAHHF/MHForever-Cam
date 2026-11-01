@@ -548,12 +548,13 @@ void replace_offset_pan_camera(Runtime &runtime, Context &context, GuestFunction
         return;
     }
 
+    const std::uint8_t active_camera_id = memory.load8(camera + 0xDC4u);
     const int active_special_id = active_special_sub_camera(memory, camera);
     if (active_special_id >= 0) {
-        char reason[128]{};
+        char reason[160]{};
         std::snprintf(reason, sizeof(reason),
-                      "fallback: special subcamera %d active during OFFSET_PAN",
-                      active_special_id);
+                      "fallback: subcamera %d isActive, selected camera id=%u during OFFSET_PAN",
+                      active_special_id, static_cast<unsigned>(active_camera_id));
         fallback(runtime, context, original, reason);
         return;
     }
@@ -562,7 +563,6 @@ void replace_offset_pan_camera(Runtime &runtime, Context &context, GuestFunction
                  "fallback: special subcamera flag outside guest memory during OFFSET_PAN");
         return;
     }
-    const std::uint8_t active_camera_id = memory.load8(camera + 0xDC4u);
     if (active_camera_id == 3u || active_camera_id == 4u || active_camera_id == 5u) {
         fallback(runtime, context, original, "fallback: selected special subcamera during OFFSET_PAN");
         return;
@@ -715,6 +715,26 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
     }
 
     const std::uint32_t camera = sub_camera - kCameraFromSubCamera;
+    if (camera_trace_enabled()) {
+        // This entry trace continues even when the normal STD path rejects the frame.
+        static std::uint64_t last_callback_trace_us = 0u;
+        const std::uint64_t trace_now = runtime.now_us();
+        if (last_callback_trace_us == 0u || trace_now < last_callback_trace_us ||
+            trace_now - last_callback_trace_us >= 500'000u) {
+            const ControllerState &trace_pad = controller_state(runtime);
+            const std::uint8_t selected = range_ok(memory, camera, 0xDC4u, 1u)
+                ? memory.load8(camera + 0xDC4u) : 0xFFu;
+            const std::uint8_t area_sub = range_ok(memory, camera, kCameraAreaSubCameraId, 1u)
+                ? memory.load8(camera + kCameraAreaSubCameraId) : 0xFFu;
+            const int special_flag = active_special_sub_camera(memory, camera);
+            std::fprintf(stderr,
+                "[mhfu-camera] STD callback camera=0x%08X area_sub=%u selected=%u special_flag=%d rx=%+.3f ry=%+.3f\\n",
+                static_cast<unsigned>(camera), static_cast<unsigned>(area_sub),
+                static_cast<unsigned>(selected), special_flag,
+                static_cast<double>(trace_pad.rx), static_cast<double>(trace_pad.ry));
+            last_callback_trace_us = trace_now;
+        }
+    }
     const std::uint32_t std_data = sub_camera + kSubCameraData;
     if (!range_ok(memory, std_data, kStdGoalRotation, 4u) ||
         !range_ok(memory, sub_camera, 0u, 0xA0u)) {
@@ -905,6 +925,7 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
     memory.store16(std_data + kStdRisingEdge, saved_rising_edge);
 
     if (native_camera_override) {
+        camera_trace("fallback: native STD update overrode custom yaw or entered a native camera state");
         g_orbit = {};
         runtime.note_analog_camera_update(0u);
     }
@@ -924,6 +945,32 @@ void replace_stage_camera(Runtime &runtime, Context &context, GuestFunction orig
     }
 
     const std::uint32_t camera = stage_sub_camera - kCameraFromStageSubCamera;
+    if (camera_trace_enabled()) {
+        // The selected camera ID matters more than an inactive object's isActive flag.
+        static std::uint64_t last_callback_trace_us = 0u;
+        const std::uint64_t trace_now = runtime.now_us();
+        if (last_callback_trace_us == 0u || trace_now < last_callback_trace_us ||
+            trace_now - last_callback_trace_us >= 500'000u) {
+            const ControllerState &trace_pad = controller_state(runtime);
+            const std::uint8_t selected = range_ok(memory, camera, 0xDC4u, 1u)
+                ? memory.load8(camera + 0xDC4u) : 0xFFu;
+            const std::uint8_t area_sub = range_ok(memory, camera, kCameraAreaSubCameraId, 1u)
+                ? memory.load8(camera + kCameraAreaSubCameraId) : 0xFFu;
+            const std::uint8_t active3 = range_ok(memory, camera, kCameraFromSubCamera + 3u * kSubCameraStride + kSubCameraIsActive, 1u)
+                ? memory.load8(camera + kCameraFromSubCamera + 3u * kSubCameraStride + kSubCameraIsActive) : 0xFFu;
+            const std::uint8_t active4 = range_ok(memory, camera, kCameraFromSubCamera + 4u * kSubCameraStride + kSubCameraIsActive, 1u)
+                ? memory.load8(camera + kCameraFromSubCamera + 4u * kSubCameraStride + kSubCameraIsActive) : 0xFFu;
+            const std::uint8_t active5 = range_ok(memory, camera, kCameraFromSubCamera + 5u * kSubCameraStride + kSubCameraIsActive, 1u)
+                ? memory.load8(camera + kCameraFromSubCamera + 5u * kSubCameraStride + kSubCameraIsActive) : 0xFFu;
+            std::fprintf(stderr,
+                "[mhfu-camera] STG callback camera=0x%08X area_sub=%u selected=%u flags=(%u,%u,%u) rx=%+.3f ry=%+.3f\\n",
+                static_cast<unsigned>(camera), static_cast<unsigned>(area_sub),
+                static_cast<unsigned>(selected), static_cast<unsigned>(active3),
+                static_cast<unsigned>(active4), static_cast<unsigned>(active5),
+                static_cast<double>(trace_pad.rx), static_cast<double>(trace_pad.ry));
+            last_callback_trace_us = trace_now;
+        }
+    }
     if (!range_ok(memory, camera, kCameraAreaSubCameraId, 1u) ||
         !range_ok(memory, camera, kCameraAreaConfig, 4u) ||
         !range_ok(memory, camera, kCameraPlayer, 4u)) {
