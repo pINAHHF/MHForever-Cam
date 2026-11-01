@@ -728,7 +728,7 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
                 ? memory.load8(camera + kCameraAreaSubCameraId) : 0xFFu;
             const int special_flag = active_special_sub_camera(memory, camera);
             std::fprintf(stderr,
-                "[mhfu-camera] STD callback camera=0x%08X area_sub=%u selected=%u special_flag=%d rx=%+.3f ry=%+.3f\\n",
+                "[mhfu-camera] STD callback camera=0x%08X area_sub=%u selected=%u special_flag=%d rx=%+.3f ry=%+.3f\n",
                 static_cast<unsigned>(camera), static_cast<unsigned>(area_sub),
                 static_cast<unsigned>(selected), special_flag,
                 static_cast<double>(trace_pad.rx), static_cast<double>(trace_pad.ry));
@@ -963,7 +963,7 @@ void replace_stage_camera(Runtime &runtime, Context &context, GuestFunction orig
             const std::uint8_t active5 = range_ok(memory, camera, kCameraFromSubCamera + 5u * kSubCameraStride + kSubCameraIsActive, 1u)
                 ? memory.load8(camera + kCameraFromSubCamera + 5u * kSubCameraStride + kSubCameraIsActive) : 0xFFu;
             std::fprintf(stderr,
-                "[mhfu-camera] STG callback camera=0x%08X area_sub=%u selected=%u flags=(%u,%u,%u) rx=%+.3f ry=%+.3f\\n",
+                "[mhfu-camera] STG callback camera=0x%08X area_sub=%u selected=%u flags=(%u,%u,%u) rx=%+.3f ry=%+.3f\n",
                 static_cast<unsigned>(camera), static_cast<unsigned>(area_sub),
                 static_cast<unsigned>(selected), static_cast<unsigned>(active3),
                 static_cast<unsigned>(active4), static_cast<unsigned>(active5),
