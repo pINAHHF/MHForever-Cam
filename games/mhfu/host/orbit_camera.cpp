@@ -804,9 +804,9 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
         if (last_input_trace_us == 0u || now < last_input_trace_us ||
             now - last_input_trace_us >= 500'000u) {
             std::fprintf(stderr,
-                "[mhfu-camera] STD input area_sub=%u move_type=%u rx=%+.3f ry=%+.3f "
+                "[mhfu-camera] STD input area_sub=%u rx=%+.3f ry=%+.3f "
                 "shaped=(%+.3f,%+.3f) yaw=%.3f elevation=%.3f\n",
-                static_cast<unsigned>(area_sub_id), static_cast<unsigned>(move_type),
+                static_cast<unsigned>(area_sub_id),
                 static_cast<double>(pad.rx), static_cast<double>(pad.ry),
                 static_cast<double>(dx), static_cast<double>(dy),
                 static_cast<double>(g_orbit.yaw), static_cast<double>(g_orbit.elevation));
