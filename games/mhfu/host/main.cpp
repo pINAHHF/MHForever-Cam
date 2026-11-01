@@ -38,6 +38,7 @@
 #include <functional>
 #include <iomanip>
 #include <sstream>
+#include <system_error>
 
 #if defined(MHF_HAS_FRONTEND)
 #include "psp_frontend.hpp"
@@ -47,6 +48,7 @@
 #include <exception>
 #ifdef _WIN32
 #include <io.h>
+#include <process.h>
 #else
 #include <unistd.h>
 #endif
@@ -64,9 +66,6 @@ using mhf::psp::Context;
 using mhf::psp::Runtime;
 
 bool g_log_overlays = true;
-
-// The game used to write diagnostics to its console. Keep those messages,
-// including automatic camera traces, in one file per session instead.
 
 // The game used to write diagnostics to its console. Keep those messages,
 // including automatic camera traces, in one file per session instead.
@@ -152,7 +151,7 @@ void configure_automatic_logging() {
     std::setvbuf(session_log, nullptr, _IONBF, 0);
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::setvbuf(stderr, nullptr, _IONBF, 0);
-    std::fprintf(stderr, "[mhfu] automatic session log enabled\\n");
+    std::fprintf(stderr, "[mhfu] automatic session log enabled\n");
 
     // camera_trace_enabled() reads this flag once, on its first use.
 #ifdef _WIN32
