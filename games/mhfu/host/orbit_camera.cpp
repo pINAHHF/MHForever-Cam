@@ -574,7 +574,7 @@ void replace_standard_view_from_stage(Runtime &runtime, std::uint32_t camera) {
     const std::uint8_t std_active = memory.load8(sub_camera + kSubCameraIsActive);
     const std::uint8_t current_id = memory.load8(sub_camera + kSubCameraCurrentId);
     const std::uint8_t state = memory.load8(sub_camera + kSubCameraState);
-    if (std_active == 0u || current_id != 0xFFu || state != 0u) {
+    if (current_id != 0xFFu || state != 0u) {
         runtime.note_analog_camera_update(0u);
         char reason[160]{};
         std::snprintf(reason, sizeof(reason),
@@ -692,7 +692,7 @@ void replace_standard_view_from_stage(Runtime &runtime, std::uint32_t camera) {
             std::fprintf(stderr,
                 "[mhfu-camera] STD-after-STG input rx=%+.3f ry=%+.3f "
                 "shaped=(%+.3f,%+.3f) yaw=%.3f elevation=%.3f "
-                "collision_constrained=%u target=(%.1f,%.1f,%.1f)\\n",
+                "collision_constrained=%u target=(%.1f,%.1f,%.1f)\n",
                 static_cast<double>(pad.rx), static_cast<double>(pad.ry),
                 static_cast<double>(dx), static_cast<double>(dy),
                 static_cast<double>(g_orbit.yaw),
