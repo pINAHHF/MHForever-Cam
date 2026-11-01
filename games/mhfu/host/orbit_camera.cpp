@@ -550,21 +550,38 @@ void replace_offset_pan_camera(Runtime &runtime, Context &context, GuestFunction
 
     const std::uint8_t active_camera_id = memory.load8(camera + 0xDC4u);
     const int active_special_id = active_special_sub_camera(memory, camera);
-    if (active_special_id >= 0) {
-        char reason[160]{};
-        std::snprintf(reason, sizeof(reason),
-                      "fallback: subcamera %d isActive, selected camera id=%u during OFFSET_PAN",
-                      active_special_id, static_cast<unsigned>(active_camera_id));
-        fallback(runtime, context, original, reason);
-        return;
-    }
     if (active_special_id == -2) {
         fallback(runtime, context, original,
                  "fallback: special subcamera flag outside guest memory during OFFSET_PAN");
         return;
     }
-    if (active_camera_id == 3u || active_camera_id == 4u || active_camera_id == 5u) {
-        fallback(runtime, context, original, "fallback: selected special subcamera during OFFSET_PAN");
+    if (active_special_id >= 0 ||
+        active_camera_id == 3u || active_camera_id == 4u || active_camera_id == 5u) {
+        // Camera::cam2view gives PLAYER_EX/PCHNGR/DEMO priority over the area
+        // camera. Let the game's special camera run unchanged, but do not
+        // destroy our saved orbit: when the special view ends, resume it.
+        const bool same_orbit = g_orbit.active && g_orbit.mode == kOrbitModeOffsetPan &&
+            g_orbit.camera == camera && g_orbit.area == area && g_orbit.player == player &&
+            g_orbit.area_id == memory.load8(area + 1u) && g_orbit.sub_camera == stg_sub_camera;
+        if (g_orbit.active && g_orbit.mode == kOrbitModeOffsetPan) {
+            if (same_orbit) {
+                // The special camera owns the rendered view. Restore the area's
+                // native pan profile while it runs; the saved yaw/elevation stay
+                // host-side and are reapplied as soon as this view releases it.
+                restore_offset_pan_profile(memory);
+            } else {
+                restore_offset_pan_profile(memory);
+                g_orbit = {};
+            }
+        }
+        char reason[176]{};
+        std::snprintf(reason, sizeof(reason),
+                      "defer: special subcamera %d selected=%u; preserving OFFSET_PAN orbit=%u",
+                      active_special_id, static_cast<unsigned>(active_camera_id),
+                      same_orbit ? 1u : 0u);
+        camera_trace(reason);
+        runtime.note_analog_camera_update(0u);
+        if (original != nullptr) original(runtime, context);
         return;
     }
 
@@ -763,6 +780,43 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
         restore_offset_pan_profile(memory);
         g_orbit = {};
         runtime.note_analog_camera_update(0u);
+    }
+
+    // A priority camera is rendered after all six subcamera callbacks. During
+    // its active frame, keep the native view untouched but retain a matching
+    // hunt-orbit state so a transient zoom/fishing/demo view does not reset it.
+    const int active_special_id = active_special_sub_camera(memory, camera);
+    if (active_special_id == -2) {
+        fallback(runtime, context, original,
+                 "fallback: special subcamera flag outside guest memory during STD");
+        return;
+    }
+    if (!range_ok(memory, camera, 0xDC4u, 1u)) {
+        fallback(runtime, context, original, "fallback: selected subcamera id outside guest memory during STD");
+        return;
+    }
+    const std::uint8_t selected_camera_id = memory.load8(camera + 0xDC4u);
+    if (active_special_id >= 0 ||
+        selected_camera_id == 3u || selected_camera_id == 4u || selected_camera_id == 5u) {
+        const std::uint32_t area_candidate = range_ok(memory, camera, kCameraAreaConfig, 4u)
+            ? memory.load32(camera + kCameraAreaConfig) : 0u;
+        const std::uint32_t player_candidate = range_ok(memory, camera, kCameraPlayer, 4u)
+            ? memory.load32(camera + kCameraPlayer) : 0u;
+        const bool same_orbit = g_orbit.active && g_orbit.mode == kOrbitModeStandard &&
+            g_orbit.camera == camera && g_orbit.area == area_candidate &&
+            g_orbit.player == player_candidate;
+        if (g_orbit.active && g_orbit.mode == kOrbitModeStandard && !same_orbit) {
+            g_orbit = {};
+        }
+        char reason[160]{};
+        std::snprintf(reason, sizeof(reason),
+                      "defer: special subcamera %d selected=%u; preserving STD orbit=%u",
+                      active_special_id, static_cast<unsigned>(selected_camera_id),
+                      same_orbit ? 1u : 0u);
+        camera_trace(reason);
+        runtime.note_analog_camera_update(0u);
+        if (original != nullptr) original(runtime, context);
+        return;
     }
 
     std::uint32_t area = 0u;
