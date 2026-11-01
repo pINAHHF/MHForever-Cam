@@ -737,312 +737,185 @@ void fallback(Runtime &runtime, Context &context, GuestFunction original, const 
     if (original != nullptr) original(runtime, context);
 }
 
-void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction original) {
-    camera_trace("replacement reached: mh_camera_orbit_update");
+void replace_standard_view_from_stage(Runtime &runtime, std::uint32_t camera) {
     auto &memory = runtime.memory();
-    const std::uint32_t sub_camera = context.gpr[4]; // SubCamera::this
-    if (sub_camera < kCameraFromSubCamera) {
-        fallback(runtime, context, original, "fallback: SubCamera pointer is below expected Camera offset");
-        return;
-    }
-
-    const std::uint32_t camera = sub_camera - kCameraFromSubCamera;
-    if (camera_trace_enabled()) {
-        // This entry trace continues even when the normal STD path rejects the frame.
-        static std::uint64_t last_callback_trace_us = 0u;
-        const std::uint64_t trace_now = runtime.now_us();
-        if (last_callback_trace_us == 0u || trace_now < last_callback_trace_us ||
-            trace_now - last_callback_trace_us >= 500'000u) {
-            const ControllerState &trace_pad = controller_state(runtime);
-            const std::uint8_t selected = range_ok(memory, camera, 0xDC4u, 1u)
-                ? memory.load8(camera + 0xDC4u) : 0xFFu;
-            const std::uint8_t area_sub = range_ok(memory, camera, kCameraAreaSubCameraId, 1u)
-                ? memory.load8(camera + kCameraAreaSubCameraId) : 0xFFu;
-            const int special_flag = active_special_sub_camera(memory, camera);
-            std::fprintf(stderr,
-                "[mhfu-camera] STD callback camera=0x%08X area_sub=%u selected=%u special_flag=%d rx=%+.3f ry=%+.3f\n",
-                static_cast<unsigned>(camera), static_cast<unsigned>(area_sub),
-                static_cast<unsigned>(selected), special_flag,
-                static_cast<double>(trace_pad.rx), static_cast<double>(trace_pad.ry));
-            last_callback_trace_us = trace_now;
-        }
-    }
+    const std::uint32_t sub_camera = camera + kCameraFromSubCamera;
     const std::uint32_t std_data = sub_camera + kSubCameraData;
-    if (!range_ok(memory, std_data, kStdGoalRotation, 4u) ||
-        !range_ok(memory, sub_camera, 0u, 0xA0u)) {
-        fallback(runtime, context, original, "fallback: SubCamera/StdCameraData pointer is outside guest memory");
-        return;
-    }
 
-    const std::uint8_t area_sub_id = range_ok(memory, camera, kCameraAreaSubCameraId, 1u)
-        ? memory.load8(camera + kCameraAreaSubCameraId) : 0xFFu;
-
-    // STD runs before STG in Camera::CameraMove. When the selected area camera is
-    // STG, leave it alone here: the dedicated cam_sub_stg replacement below owns
-    // OFFSET_PAN. In particular, do not clear the STG orbit state on every frame.
-    if (area_sub_id != 0u) {
-        if (g_orbit.active && g_orbit.mode == kOrbitModeStandard) {
-            g_orbit = {};
-            runtime.note_analog_camera_update(0u);
-        }
-        if (original != nullptr) original(runtime, context);
-        return;
-    }
-
-    // Returning from an OFFSET_PAN area to ordinary STD follow restores the
-    // immutable map profile before the normal camera path resumes.
-    if (g_orbit.active && g_orbit.mode == kOrbitModeOffsetPan) {
-        restore_offset_pan_profile(memory);
-        g_orbit = {};
+    if (!range_ok(memory, camera, kCameraAreaSubCameraId, 1u) ||
+        memory.load8(camera + kCameraAreaSubCameraId) != 0u ||
+        !range_ok(memory, camera, kCameraAreaConfig, 4u) ||
+        !range_ok(memory, camera, kCameraPlayer, 4u) ||
+        !range_ok(memory, camera, 0xDC4u, 1u) ||
+        !range_ok(memory, sub_camera, 0u, 0x20u) ||
+        !range_ok(memory, sub_camera, kSubCameraIsActive, 1u) ||
+        !range_ok(memory, sub_camera, kSubCameraCurrentId, 1u) ||
+        !range_ok(memory, sub_camera, kSubCameraState, 1u) ||
+        !range_ok(memory, std_data, 0u, 0x90u)) {
         runtime.note_analog_camera_update(0u);
+        camera_trace("STD-after-STG rejected: camera or subcamera fields are unreadable");
+        return;
     }
 
-    // A priority camera is rendered after all six subcamera callbacks. During
-    // its active frame, keep the native view untouched but retain a matching
-    // hunt-orbit state so a transient zoom/fishing/demo view does not reset it.
     const int active_special_id = active_special_sub_camera(memory, camera);
-    if (active_special_id == -2) {
-        fallback(runtime, context, original,
-                 "fallback: special subcamera flag outside guest memory during STD");
-        return;
-    }
-    if (!range_ok(memory, camera, 0xDC4u, 1u)) {
-        fallback(runtime, context, original, "fallback: selected subcamera id outside guest memory during STD");
-        return;
-    }
     const std::uint8_t selected_camera_id = memory.load8(camera + 0xDC4u);
-    if (active_special_id >= 0 ||
-        selected_camera_id == 3u || selected_camera_id == 4u || selected_camera_id == 5u) {
-        const std::uint32_t area_candidate = range_ok(memory, camera, kCameraAreaConfig, 4u)
-            ? memory.load32(camera + kCameraAreaConfig) : 0u;
-        const std::uint32_t player_candidate = range_ok(memory, camera, kCameraPlayer, 4u)
-            ? memory.load32(camera + kCameraPlayer) : 0u;
-        const bool same_orbit = g_orbit.active && g_orbit.mode == kOrbitModeStandard &&
-            g_orbit.camera == camera && g_orbit.area == area_candidate &&
-            g_orbit.player == player_candidate;
-        if (g_orbit.active && g_orbit.mode == kOrbitModeStandard && !same_orbit) {
-            g_orbit = {};
-        }
+    if (active_special_id >= 0 || selected_camera_id == 3u ||
+        selected_camera_id == 4u || selected_camera_id == 5u) {
+        // The game owns the rendered view during zoom/fishing, scope and demos.
+        // Keep the saved hunt orbit so it can resume when that temporary view ends.
+        runtime.note_analog_camera_update(0u);
+        return;
+    }
+
+    const std::uint32_t area = memory.load32(camera + kCameraAreaConfig);
+    const std::uint32_t player = memory.load32(camera + kCameraPlayer);
+    if (area == 0u || player == 0u ||
+        !range_ok(memory, player, kPlayerPositionX, 12u)) {
+        runtime.note_analog_camera_update(0u);
+        camera_trace("STD-after-STG rejected: area or player pointer is invalid");
+        return;
+    }
+
+    const std::uint8_t std_active = memory.load8(sub_camera + kSubCameraIsActive);
+    const std::uint8_t current_id = memory.load8(sub_camera + kSubCameraCurrentId);
+    const std::uint8_t state = memory.load8(sub_camera + kSubCameraState);
+    if (std_active == 0u || current_id != 0xFFu || state != 0u) {
+        runtime.note_analog_camera_update(0u);
         char reason[160]{};
         std::snprintf(reason, sizeof(reason),
-                      "defer: special subcamera %d selected=%u; preserving STD orbit=%u",
-                      active_special_id, static_cast<unsigned>(selected_camera_id),
-                      same_orbit ? 1u : 0u);
+                      "STD-after-STG waiting: active=%u current_id=0x%02X state=%u",
+                      static_cast<unsigned>(std_active), static_cast<unsigned>(current_id),
+                      static_cast<unsigned>(state));
         camera_trace(reason);
+        return;
+    }
+
+    if (special_player_action(memory, player)) {
         runtime.note_analog_camera_update(0u);
-        if (original != nullptr) original(runtime, context);
+        camera_trace("STD-after-STG paused: player is in a protected action");
         return;
     }
 
-    std::uint32_t area = 0u;
-    std::uint32_t player = 0u;
-    char context_rejection[192]{};
-    if (!standard_camera_context(memory, sub_camera, camera, area, player,
-                                 context_rejection, sizeof(context_rejection))) {
-        char message[224]{};
-        std::snprintf(message, sizeof(message), "fallback: standard context rejected: %s",
-                      context_rejection[0] != '\0' ? context_rejection : "unspecified");
-        fallback(runtime, context, original, message);
-        return;
-    }
-    if (special_player_state(memory, player, std_data)) {
-        fallback(runtime, context, original, "fallback: player/action state is marked special");
-        return;
-    }
-
-    // A wall/ceiling transition still uses the native camera resolver. Aiming,
-    // climbing, falls, rides, scripted areas and cutscenes took the fallback above.
-    if (!range_ok(memory, area, 0u, 0xE0u) ||
-        !range_ok(memory, player, kPlayerRotationY, 2u) ||
-        !range_ok(memory, area, 0x40u, 0x20u)) {
-        fallback(runtime, context, original, "fallback: area/player structure range validation failed");
+    const float position_x = load_float(memory, sub_camera + 0x00u);
+    const float position_y = load_float(memory, sub_camera + 0x04u);
+    const float position_z = load_float(memory, sub_camera + 0x08u);
+    const float target_x = load_float(memory, sub_camera + 0x10u);
+    const float target_y = load_float(memory, sub_camera + 0x14u);
+    const float target_z = load_float(memory, sub_camera + 0x18u);
+    const float offset_x = position_x - target_x;
+    const float offset_y = position_y - target_y;
+    const float offset_z = position_z - target_z;
+    const float horizontal = std::hypot(offset_x, offset_z);
+    const float distance = std::sqrt(horizontal * horizontal + offset_y * offset_y);
+    if (!std::isfinite(position_x) || !std::isfinite(position_y) ||
+        !std::isfinite(position_z) || !std::isfinite(target_x) ||
+        !std::isfinite(target_y) || !std::isfinite(target_z) ||
+        !std::isfinite(distance) || distance < kMinOrbitDistance ||
+        distance > kMaxOrbitDistance || horizontal < 1.0f) {
+        runtime.note_analog_camera_update(0u);
+        camera_trace("STD-after-STG rejected: native camera position/target is invalid");
         return;
     }
 
-    const std::uint8_t selected_height_id = memory.load8(camera + kCameraHeightId);
-    const std::uint32_t selected_height_index = selected_height_id == 0u
-        ? 4u : std::min<std::uint32_t>(selected_height_id - 1u, 4u);
-    const std::uint32_t selected_entry = area + kAreaHeightDefinition + kFollowEntriesOffset +
-                                         selected_height_index * kFollowEntryStride;
-    if (!g_orbit.active || g_orbit.camera != camera ||
-        g_orbit.sub_camera != sub_camera || g_orbit.area != area ||
-        g_orbit.player != player || g_orbit.follow_entry != selected_entry) {
-        if (!capture_orbit(g_orbit, memory, sub_camera, camera, area, player, std_data)) {
-            fallback(runtime, context, original, "fallback: could not capture initial orbit profile (height/distance/rotation)");
-            return;
-        }
+    if (!g_orbit.active || g_orbit.mode != kOrbitModeStandard ||
+        g_orbit.camera != camera || g_orbit.sub_camera != sub_camera ||
+        g_orbit.area != area || g_orbit.player != player) {
+        g_orbit = {};
+        g_orbit.active = true;
+        g_orbit.mode = kOrbitModeStandard;
+        g_orbit.sub_camera = sub_camera;
+        g_orbit.camera = camera;
+        g_orbit.area = area;
+        g_orbit.player = player;
+        g_orbit.distance = distance;
+        g_orbit.yaw = wrap_angle(std::atan2(offset_x, offset_z));
+        g_orbit.elevation = std::clamp(std::atan2(offset_y, horizontal),
+                                       kMinElevation, kMaxElevation);
+        g_orbit.initial_elevation = g_orbit.elevation;
     }
 
     const std::uint64_t now = runtime.now_us();
     float dt = 1.0f / 60.0f;
     if (g_orbit.last_update_us != 0u && now >= g_orbit.last_update_us) {
-        dt = std::clamp(static_cast<float>(now - g_orbit.last_update_us) / 1'000'000.0f, 0.0f, 0.05f);
+        dt = std::clamp(static_cast<float>(now - g_orbit.last_update_us) /
+                        1'000'000.0f, 0.0f, 0.05f);
     } else if (g_orbit.last_update_us != 0u && now < g_orbit.last_update_us) {
         g_orbit.last_update_us = 0u;
     }
 
-    camera_trace("orbit active: analog right-stick camera path accepted");
-    runtime.note_analog_camera_update(now);
     const ControllerState &pad = controller_state(runtime);
     const float dx = shape_axis(pad.rx);
     const float dy = shape_axis(pad.ry);
-
     if ((pad.buttons & buttons::kLTrigger) != 0u) {
-        const auto player_rotation = static_cast<std::int16_t>(memory.load16(player + kPlayerRotationY));
-        const std::int32_t recentered = static_cast<std::int32_t>(player_rotation) + 0x8000;
-        g_orbit.yaw = wrap_angle(static_cast<float>(recentered) / kAngleUnitsPerRadian);
+        const auto player_rotation =
+            static_cast<std::int16_t>(memory.load16(player + kPlayerRotationY));
+        const std::int32_t recentered =
+            static_cast<std::int32_t>(player_rotation) + 0x8000;
+        g_orbit.yaw = wrap_angle(static_cast<float>(recentered) /
+                                 kAngleUnitsPerRadian);
         g_orbit.elevation = g_orbit.initial_elevation;
     } else {
-        // Shape the axes independently. There is deliberately no radial deadzone
-        // or diagonal normalization: moving one axis cannot inject motion into the other.
         g_orbit.yaw = wrap_angle(g_orbit.yaw - dx * kYawSpeed * dt);
         g_orbit.elevation = std::clamp(g_orbit.elevation + dy * kPitchSpeed * dt,
                                        kMinElevation, kMaxElevation);
     }
-
     g_orbit.last_update_us = now;
+
+    // cam_sub_std has already run earlier in Camera::CameraMove and supplied
+    // a collision-resolved native view. In tight wall/ceiling/fall states,
+    // leave that safe native position alone rather than pushing the camera
+    // through geometry. The orbit state and input continue to update.
+    const bool collision_constrained =
+        memory.load8(std_data + kStdIsFalldown) != 0u ||
+        memory.load8(std_data + kStdIsViewBlocked) != 0u ||
+        memory.load8(std_data + kStdIsKabegiwa) != 0u ||
+        memory.load8(std_data + kStdKabegiwaTimer) != 0u;
+    if (!collision_constrained) {
+        const float cos_elevation = std::cos(g_orbit.elevation);
+        const float camera_x = target_x +
+            std::sin(g_orbit.yaw) * cos_elevation * g_orbit.distance;
+        const float camera_y = target_y +
+            std::sin(g_orbit.elevation) * g_orbit.distance;
+        const float camera_z = target_z +
+            std::cos(g_orbit.yaw) * cos_elevation * g_orbit.distance;
+        if (std::isfinite(camera_x) && std::isfinite(camera_y) &&
+            std::isfinite(camera_z)) {
+            // Change only SubCamera's rendered position. StdCameraData remains
+            // native, so the next frame's collision solver starts from its own
+            // state and this post-STD stage hook applies the orbit again.
+            store_float(memory, sub_camera + 0x00u, camera_x);
+            store_float(memory, sub_camera + 0x04u, camera_y);
+            store_float(memory, sub_camera + 0x08u, camera_z);
+        }
+    }
+
+    runtime.note_analog_camera_update(now);
     if (camera_trace_enabled()) {
         static std::uint64_t last_input_trace_us = 0u;
         if (last_input_trace_us == 0u || now < last_input_trace_us ||
             now - last_input_trace_us >= 500'000u) {
             std::fprintf(stderr,
-                "[mhfu-camera] STD input area_sub=%u rx=%+.3f ry=%+.3f "
-                "shaped=(%+.3f,%+.3f) yaw=%.3f elevation=%.3f\n",
-                static_cast<unsigned>(area_sub_id),
+                "[mhfu-camera] STD-after-STG input rx=%+.3f ry=%+.3f "
+                "shaped=(%+.3f,%+.3f) yaw=%.3f elevation=%.3f "
+                "collision_constrained=%u target=(%.1f,%.1f,%.1f)\\n",
                 static_cast<double>(pad.rx), static_cast<double>(pad.ry),
                 static_cast<double>(dx), static_cast<double>(dy),
-                static_cast<double>(g_orbit.yaw), static_cast<double>(g_orbit.elevation));
+                static_cast<double>(g_orbit.yaw),
+                static_cast<double>(g_orbit.elevation),
+                static_cast<unsigned>(collision_constrained),
+                static_cast<double>(target_x), static_cast<double>(target_y),
+                static_cast<double>(target_z));
             last_input_trace_us = now;
         }
     }
+    camera_trace("orbit active: STD post-update right-stick camera path accepted");
+}
 
-    // The native camera routine is retained as the wall/ground/safety solver.
-    // D-pad stage changes are masked for this call. We temporarily rewrite only
-    // the currently selected follow entry with our orbit elevation, then restore
-    // that profile and every input byte after native collision handling.
-    const std::uint32_t orbit_entry = g_orbit.follow_entry;
-    if (!memory.contains(orbit_entry, kFollowEntryStride) ||
-        !range_ok(memory, camera, kCameraHeightId, 1u) ||
-        !range_ok(memory, std_data, kStdButtons, 4u)) {
-        fallback(runtime, context, original, "fallback: selected orbit entry or camera input fields are outside guest memory");
-        return;
-    }
-
-    const std::uint32_t saved_entry_y = memory.load32(orbit_entry + kFollowEntryYOffset);
-    const std::uint32_t saved_entry_z = memory.load32(orbit_entry + kFollowEntryZOffset);
-    const std::uint32_t saved_entry_height = memory.load32(orbit_entry + kFollowEntryHeight);
-    const std::uint32_t saved_entry_min_height = memory.load32(orbit_entry + kFollowEntryMinHeight);
-    const std::uint16_t saved_camera_buttons = memory.load16(camera + kCameraButtons);
-    const std::uint16_t saved_camera_rising_edge = memory.load16(camera + kCameraRisingEdge);
-    const std::uint16_t saved_buttons = memory.load16(std_data + kStdButtons);
-    const std::uint16_t saved_rising_edge = memory.load16(std_data + kStdRisingEdge);
-
-    const float camera_y_offset = g_orbit.target_height + g_orbit.distance * std::sin(g_orbit.elevation);
-    const float camera_z_offset = g_orbit.distance * std::cos(g_orbit.elevation);
-    if (!std::isfinite(camera_y_offset) || !std::isfinite(camera_z_offset)) {
-        fallback(runtime, context, original, "fallback: computed orbit offset is not finite");
-        return;
-    }
-
-    store_float(memory, orbit_entry + kFollowEntryYOffset, camera_y_offset);
-    store_float(memory, orbit_entry + kFollowEntryZOffset, camera_z_offset);
-    store_float(memory, orbit_entry + kFollowEntryHeight, g_orbit.target_height);
-    store_float(memory, orbit_entry + kFollowEntryMinHeight, g_orbit.min_height);
-
-    const std::uint16_t yaw_units = angle_to_units(g_orbit.yaw);
-    // std_cam_sw_set_sub() copies these Camera-level fields into StdCameraData.
-    // Mask them only for the native camera call; the player's ordinary action
-    // inputs live in Player.buttons and remain untouched.
-    memory.store16(camera + kCameraButtons, 0u);
-    memory.store16(camera + kCameraRisingEdge, 0u);
-    memory.store16(std_data + kStdButtons, 0u);
-    memory.store16(std_data + kStdRisingEdge, 0u);
-    memory.store8(std_data + kStdIsViewBlocked, 0u);
-    memory.store8(std_data + kStdIsFastRotate, 0u);
-    memory.store8(std_data + kStdInertiaTimer, 0u);
-    memory.store32(std_data + kStdGoalRotation,
-                   static_cast<std::uint32_t>(yaw_units) |
-                   (static_cast<std::uint32_t>(yaw_units) << 16u));
-
-    if (original != nullptr) {
-        original(runtime, context);
-    }
-
-    // The native camera remains the wall/ground collision solver. Its ordinary
-    // player-turn recentering is corrected below; only true special states may
-    // release orbit control back to stock.
-    const std::uint16_t native_goal_rotation = memory.load16(std_data + kStdGoalRotation);
-    const std::uint16_t native_rotation = memory.load16(std_data + kStdGoalRotation + 2u);
-    const std::uint8_t native_fast_rotate = memory.load8(std_data + kStdIsFastRotate);
-    const std::uint8_t native_view_blocked = memory.load8(std_data + kStdIsViewBlocked);
-    const std::uint8_t native_kabegiwa = memory.load8(std_data + kStdIsKabegiwa);
-    const std::uint8_t native_kabegiwa_timer = memory.load8(std_data + kStdKabegiwaTimer);
-    const bool native_angle_override = native_goal_rotation != yaw_units || native_rotation != yaw_units;
-
-    // A normal player turn can make cam_sub_std briefly recenter its own yaw
-    // (Cam_senkai_chk). That is not a special camera and must not kill the
-    // analog orbit. Undo the resulting angular change in the resolved camera
-    // positions when the collision solver did not constrain the view.
-    if (native_angle_override || native_fast_rotate != 0u) {
-        const auto native_angle = static_cast<std::int16_t>(native_rotation);
-        const auto angle_delta_units = static_cast<std::int16_t>(
-            static_cast<std::uint16_t>(yaw_units - static_cast<std::uint16_t>(native_angle)));
-        const float angle_delta = static_cast<float>(angle_delta_units) / kAngleUnitsPerRadian;
-        const float cosine = std::cos(angle_delta);
-        const float sine = std::sin(angle_delta);
-        const bool collision_constrained = native_view_blocked != 0u ||
-            native_kabegiwa != 0u || native_kabegiwa_timer != 0u;
-        if (!collision_constrained && memory.contains(std_data, 0x60u) &&
-            memory.contains(sub_camera, 12u)) {
-            const float center_x = load_float(memory, std_data + 0x50u);
-            const float center_z = load_float(memory, std_data + 0x58u);
-            rotate_xz_about(memory, std_data + 0x00u, center_x, center_z, cosine, sine);
-            rotate_xz_about(memory, std_data + 0x20u, center_x, center_z, cosine, sine);
-            rotate_xz_about(memory, std_data + 0x40u, center_x, center_z, cosine, sine);
-            rotate_xz_about(memory, sub_camera, center_x, center_z, cosine, sine);
-        }
-        // Keep the persistent STD camera angles owned by the orbit. The next
-        // frame will start at this yaw instead of inheriting native recentering.
-        memory.store16(std_data + kStdGoalRotation, yaw_units);
-        memory.store16(std_data + kStdGoalRotation + 2u, yaw_units);
-        memory.store8(std_data + kStdIsFastRotate, 0u);
-        memory.store8(std_data + kStdInertiaTimer, 0u);
-        if (camera_trace_enabled()) {
-            std::fprintf(stderr,
-                "[mhfu-camera] STD neutralized native recenter goal=%04X rotation=%04X expected=%04X "
-                "fast=%u blocked=%u kabegiwa=%u timer=%u collision_corrected=%u\n",
-                static_cast<unsigned>(native_goal_rotation), static_cast<unsigned>(native_rotation),
-                static_cast<unsigned>(yaw_units), static_cast<unsigned>(native_fast_rotate),
-                static_cast<unsigned>(native_view_blocked), static_cast<unsigned>(native_kabegiwa),
-                static_cast<unsigned>(native_kabegiwa_timer),
-                static_cast<unsigned>(!collision_constrained));
-        }
-    }
-
-    const bool native_camera_override =
-        memory.load8(std_data + kStdIsShoulderCam) != 0u ||
-        static_cast<std::int8_t>(memory.load8(std_data + kStdGunTargetingState)) >= 0 ||
-        memory.load8(std_data + kStdIsFalldown) != 0u ||
-        native_kabegiwa != 0u || native_kabegiwa_timer != 0u;
-
-    // Do not leave the temporary camera profile or masked controls in guest
-    // memory. The native function keeps its valid pointer to the selected entry.
-    // The next frame rebuilds the orbit profile from
-    // the independent host-side yaw/elevation state.
-    memory.store32(orbit_entry + kFollowEntryYOffset, saved_entry_y);
-    memory.store32(orbit_entry + kFollowEntryZOffset, saved_entry_z);
-    memory.store32(orbit_entry + kFollowEntryHeight, saved_entry_height);
-    memory.store32(orbit_entry + kFollowEntryMinHeight, saved_entry_min_height);
-    memory.store16(camera + kCameraButtons, saved_camera_buttons);
-    memory.store16(camera + kCameraRisingEdge, saved_camera_rising_edge);
-    memory.store16(std_data + kStdButtons, saved_buttons);
-    memory.store16(std_data + kStdRisingEdge, saved_rising_edge);
-
-    if (native_camera_override) {
-        camera_trace("fallback: native STD update entered a shoulder/aim/falldown/wall camera state");
-        g_orbit = {};
-        runtime.note_analog_camera_update(0u);
-    }
+void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction original) {
+    // The reliable per-frame camera point is the STG callback, which runs after
+    // cam_sub_std. Keep this hook as a transparent native pass-through.
+    camera_trace("replacement reached: mh_camera_orbit_update");
+    if (original != nullptr) original(runtime, context);
 }
 
 } // namespace
@@ -1060,7 +933,6 @@ void replace_stage_camera(Runtime &runtime, Context &context, GuestFunction orig
 
     const std::uint32_t camera = stage_sub_camera - kCameraFromStageSubCamera;
     if (camera_trace_enabled()) {
-        // The selected camera ID matters more than an inactive object's isActive flag.
         static std::uint64_t last_callback_trace_us = 0u;
         const std::uint64_t trace_now = runtime.now_us();
         if (last_callback_trace_us == 0u || trace_now < last_callback_trace_us ||
@@ -1085,6 +957,7 @@ void replace_stage_camera(Runtime &runtime, Context &context, GuestFunction orig
             last_callback_trace_us = trace_now;
         }
     }
+
     if (!range_ok(memory, camera, kCameraAreaSubCameraId, 1u) ||
         !range_ok(memory, camera, kCameraAreaConfig, 4u) ||
         !range_ok(memory, camera, kCameraPlayer, 4u)) {
@@ -1098,13 +971,27 @@ void replace_stage_camera(Runtime &runtime, Context &context, GuestFunction orig
     const bool is_offset_pan = area_sub_id == 2u &&
         range_ok(memory, area, kAreaMoveType, 1u) &&
         memory.load8(area + kAreaMoveType) == 3u;
+
     if (!is_offset_pan) {
         if (g_orbit.active && g_orbit.mode == kOrbitModeOffsetPan) {
             restore_offset_pan_profile(memory);
             g_orbit = {};
             runtime.note_analog_camera_update(0u);
         }
+
+        // The game runs cam_sub_std before cam_sub_stg. The STG callback is
+        // therefore the dependable post-update point for a normal follow view,
+        // even in transitions where the STD replacement is not entered.
         if (original != nullptr) original(runtime, context);
+        if (area_sub_id == 0u) {
+            replace_standard_view_from_stage(runtime, camera);
+        } else if (g_orbit.active && g_orbit.mode == kOrbitModeStandard) {
+            const int special_id = active_special_sub_camera(memory, camera);
+            if (special_id < 0) {
+                g_orbit = {};
+                runtime.note_analog_camera_update(0u);
+            }
+        }
         return;
     }
 
