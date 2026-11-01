@@ -453,7 +453,7 @@ bool read_offset_pan_target(const psprecomp::GuestMemory &memory, std::uint32_t 
     return std::isfinite(target_x) && std::isfinite(target_y) && std::isfinite(target_z);
 }
 
-void restore_offset_pan_profile(const psprecomp::GuestMemory &memory) {
+void restore_offset_pan_profile(psprecomp::GuestMemory &memory) {
     if (!g_orbit.active || g_orbit.mode != kOrbitModeOffsetPan ||
         !range_ok(memory, g_orbit.area, kAreaMoveType, 1u) ||
         !range_ok(memory, g_orbit.area, kAreaPanCameraPosition, 12u)) {
@@ -464,12 +464,9 @@ void restore_offset_pan_profile(const psprecomp::GuestMemory &memory) {
         memory.load8(g_orbit.area + 1u) != g_orbit.area_id) {
         return;
     }
-    store_float(const_cast<psprecomp::GuestMemory &>(memory), g_orbit.area + kAreaPanCameraPosition,
-                g_orbit.base_pan_x);
-    store_float(const_cast<psprecomp::GuestMemory &>(memory), g_orbit.area + kAreaPanCameraPosition + 4u,
-                g_orbit.base_pan_y);
-    store_float(const_cast<psprecomp::GuestMemory &>(memory), g_orbit.area + kAreaPanCameraPosition + 8u,
-                g_orbit.base_pan_z);
+    store_float(memory, g_orbit.area + kAreaPanCameraPosition, g_orbit.base_pan_x);
+    store_float(memory, g_orbit.area + kAreaPanCameraPosition + 4u, g_orbit.base_pan_y);
+    store_float(memory, g_orbit.area + kAreaPanCameraPosition + 8u, g_orbit.base_pan_z);
 }
 
 bool capture_offset_pan_orbit(OrbitState &state, const psprecomp::GuestMemory &memory,
@@ -567,14 +564,14 @@ void replace_offset_pan_camera(Runtime &runtime, Context &context, GuestFunction
         return;
     }
 
-    if (special_player_state(memory, player, std_data)) {
+    if (special_player_action(memory, player)) {
         fallback(runtime, context, original, "fallback: player/action state is marked special during OFFSET_PAN");
         return;
     }
 
     if (!g_orbit.active || g_orbit.mode != kOrbitModeOffsetPan ||
         g_orbit.camera != camera || g_orbit.area != area || g_orbit.player != player ||
-        g_orbit.sub_camera != stg_sub_camera) {
+        g_orbit.area_id != memory.load8(area + 1u) || g_orbit.sub_camera != stg_sub_camera) {
         restore_offset_pan_profile(memory);
         g_orbit = {};
         if (!capture_offset_pan_orbit(g_orbit, memory, std_sub_camera, camera, area, player)) {
@@ -682,6 +679,17 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
         ? memory.load8(camera + kCameraAreaSubCameraId) : 0xFFu;
     const std::uint8_t move_type = range_ok(memory, current_area, kAreaMoveType, 1u)
         ? memory.load8(current_area + kAreaMoveType) : 0xFFu;
+
+    // Leaving an OFFSET_PAN area must restore its immutable map profile before
+    // the standard/rail/fixed camera path takes over.
+    const bool same_offset_pan = area_sub_id == 2u && move_type == 3u &&
+        current_area == g_orbit.area && current_player == g_orbit.player &&
+        g_orbit.mode == kOrbitModeOffsetPan;
+    if (g_orbit.active && g_orbit.mode == kOrbitModeOffsetPan && !same_offset_pan) {
+        restore_offset_pan_profile(memory);
+        g_orbit = {};
+        runtime.note_analog_camera_update(0u);
+    }
 
     if (area_sub_id == 2u && move_type == 3u) {
         replace_offset_pan_camera(runtime, context, original, sub_camera, camera,
