@@ -6,6 +6,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -309,21 +310,48 @@ void SdlHost::window_pixel_size(int &width, int &height) const {
 GamepadState SdlHost::input() const {
     GamepadState s;
     if (std::getenv("MHF_CAMERA_LOG") != nullptr) {
-        static Uint64 last_trace_ms = 0;
-        const Uint64 now_ms = SDL_GetTicks();
-        if (last_trace_ms == 0 || now_ms < last_trace_ms || now_ms - last_trace_ms >= 500) {
+        // Log the controller once, then only when the right stick changes enough
+        // to cross the camera deadzone. input() is polled every frame; repeating
+        // the same neutral snapshot every 500 ms adds noise but no diagnostics.
+        static bool has_trace_snapshot = false;
+        static std::vector<std::array<Sint16, 2>> last_trace_axes;
+        std::vector<std::array<Sint16, 2>> trace_axes;
+        trace_axes.reserve(impl_->gamepads.size());
+        for (SDL_Gamepad *gamepad : impl_->gamepads) {
+            trace_axes.push_back({
+                SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTX),
+                SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTY)
+            });
+        }
+
+        bool changed = !has_trace_snapshot || trace_axes.size() != last_trace_axes.size();
+        constexpr int kTraceAxisDelta = 4096; // below the camera's effective 0.16 deadzone
+        if (!changed) {
+            for (std::size_t i = 0; i < trace_axes.size(); ++i) {
+                const int dx = std::abs(static_cast<int>(trace_axes[i][0]) -
+                                        static_cast<int>(last_trace_axes[i][0]));
+                const int dy = std::abs(static_cast<int>(trace_axes[i][1]) -
+                                        static_cast<int>(last_trace_axes[i][1]));
+                if (dx >= kTraceAxisDelta || dy >= kTraceAxisDelta) {
+                    changed = true;
+                    break;
+                }
+            }
+        }
+
+        if (changed) {
             std::fprintf(stderr, "[host-pad] right-stick sources: gamepads=%zu", impl_->gamepads.size());
             for (std::size_t i = 0; i < impl_->gamepads.size(); ++i) {
                 SDL_Gamepad *gamepad = impl_->gamepads[i];
-                const Sint16 raw_x = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTX);
-                const Sint16 raw_y = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTY);
                 const char *name = SDL_GetGamepadName(gamepad);
                 std::fprintf(stderr, " | #%zu %s RX=%d RY=%d", i,
                              name != nullptr ? name : "(unknown)",
-                             static_cast<int>(raw_x), static_cast<int>(raw_y));
+                             static_cast<int>(trace_axes[i][0]),
+                             static_cast<int>(trace_axes[i][1]));
             }
             std::fputc('\n', stderr);
-            last_trace_ms = now_ms;
+            last_trace_axes = trace_axes;
+            has_trace_snapshot = true;
         }
     }
     static const bool kNoKeys[SDL_SCANCODE_COUNT] = {};
