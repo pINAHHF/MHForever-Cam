@@ -239,10 +239,13 @@ bool is_lobby_or_unknown(const psprecomp::GuestMemory &memory, char *reason,
     }
 
     std::snprintf(reason, reason_size,
-                  "no valid GameSys singleton: slot1=0x%08X ptr1=0x%08X player1=%u; slot2=0x%08X ptr2=0x%08X player2=%u",
+                  "no GameSys: A[%08X>%08X p%u d%u g%u f%08X] B[%08X>%08X p%u d%u g%u f%08X]",
                   static_cast<unsigned>(seen_slots[0]), static_cast<unsigned>(seen_ptrs[0]),
-                  static_cast<unsigned>(player_ids[0]), static_cast<unsigned>(seen_slots[1]),
-                  static_cast<unsigned>(seen_ptrs[1]), static_cast<unsigned>(player_ids[1]));
+                  static_cast<unsigned>(player_ids[0]), static_cast<unsigned>(demos[0]),
+                  static_cast<unsigned>(galleries[0]), static_cast<unsigned>(flags[0]),
+                  static_cast<unsigned>(seen_slots[1]), static_cast<unsigned>(seen_ptrs[1]),
+                  static_cast<unsigned>(player_ids[1]), static_cast<unsigned>(demos[1]),
+                  static_cast<unsigned>(galleries[1]), static_cast<unsigned>(flags[1]));
     return true;
 #endif
 }
