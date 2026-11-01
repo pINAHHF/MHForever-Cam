@@ -19,7 +19,10 @@ mh_camera_orbit_inputs  = 0x088878BC # angles are prepared; apply analog delta b
 
 [data]
 mh_overlay_region_bases = 0x089CBA70 # u32[6], region base address per group
-mh_game_sys_singleton    = 0x089C7508 # Candidate MHP2G GameSys singleton slot for the EU layout; runtime validates the object and falls back if invalid.
+mh_game_sys_singleton    = 0x089C7508 # GameSys::objectPtr.
+mh_game_task_singleton   = 0x09A40998 # GameTask::objectPtr.
+mh_task_manager_singleton = 0x08A862B8 # TaskManager::objectPtr.
+mh_system_singleton      = 0x08A5E270 # System::objectPtr.
 
 [offsets]
 system_active_overlays  = 0x00F7A580 # u16[6] inside System, active DATA.BIN file id per group (0xFFFF = none)
