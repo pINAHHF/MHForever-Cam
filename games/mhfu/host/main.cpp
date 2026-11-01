@@ -47,7 +47,6 @@
 #include <cstring>
 #include <exception>
 #ifdef _WIN32
-#include <io.h>
 #include <process.h>
 #else
 #include <unistd.h>
@@ -128,29 +127,22 @@ void configure_automatic_logging() {
              << '-' << process_id << ".log";
     const fs::path log_path = log_directory / filename.str();
 
-    static std::FILE *session_log = nullptr;
+    static std::FILE *session_stdout = nullptr;
+    static std::FILE *session_stderr = nullptr;
 #ifdef _WIN32
-    session_log = _wfopen(log_path.c_str(), L"ab");
-    if (session_log == nullptr) return;
-    const int log_descriptor = _fileno(session_log);
-    if (log_descriptor < 0 ||
-        _dup2(log_descriptor, _fileno(stdout)) != 0 ||
-        _dup2(log_descriptor, _fileno(stderr)) != 0) {
+    // GUI-subsystem processes may start without usable console descriptors.
+    // freopen assigns the CRT streams directly to the session log.
+    if (_wfreopen_s(&session_stdout, log_path.c_str(), L"ab", stdout) != 0 ||
+        _wfreopen_s(&session_stderr, log_path.c_str(), L"ab", stderr) != 0) {
         return;
     }
 #else
-    session_log = std::fopen(log_path.c_str(), "ab");
-    if (session_log == nullptr) return;
-    const int log_descriptor = fileno(session_log);
-    if (log_descriptor < 0 ||
-        dup2(log_descriptor, STDOUT_FILENO) < 0 ||
-        dup2(log_descriptor, STDERR_FILENO) < 0) {
-        return;
-    }
+    session_stdout = std::freopen(log_path.c_str(), "ab", stdout);
+    session_stderr = std::freopen(log_path.c_str(), "ab", stderr);
+    if (session_stdout == nullptr || session_stderr == nullptr) return;
 #endif
-    std::setvbuf(session_log, nullptr, _IONBF, 0);
-    std::setvbuf(stdout, nullptr, _IONBF, 0);
-    std::setvbuf(stderr, nullptr, _IONBF, 0);
+    std::setvbuf(session_stdout, nullptr, _IONBF, 0);
+    std::setvbuf(session_stderr, nullptr, _IONBF, 0);
     std::fprintf(stderr, "[mhfu] automatic session log enabled\n");
 
     // camera_trace_enabled() reads this flag once, on its first use.
