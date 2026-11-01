@@ -1110,6 +1110,7 @@ void apply_standard_orbit_pitch_after_native(Runtime &runtime, std::uint32_t cam
         !range_ok(memory, std_data, kStdIsViewBlocked, 1u) ||
         !range_ok(memory, std_data, kStdIsKabegiwa, 1u) ||
         !range_ok(memory, std_data, kStdKabegiwaTimer, 1u) ||
+        !range_ok(memory, std_data, 0u, 12u) ||
         !range_ok(memory, std_data, kStdGoalPosition + 4u, 4u) ||
         !range_ok(memory, std_data, kStdIsGroundAdjusted, 1u)) {
         return;
@@ -1208,9 +1209,32 @@ void apply_standard_orbit_pitch_after_native(Runtime &runtime, std::uint32_t cam
         return;
     }
 
+    // SubCamera::current_position is the rendered output, but the native
+    // STD solver starts its next frame from StdCameraData::position at
+    // std_data + 0x00. Keep both copies synchronized or the next native pass
+    // pulls the view back toward the stale pre-correction position.
+    //
+    // Apply the same delta to the internal position rather than copying the
+    // rendered Y directly: current_position includes a native camera-shake
+    // offset that is added after StdCameraData::position is copied.
+    const float native_position_x = load_float(memory, std_data + 0x00u);
+    const float native_position_y = load_float(memory, std_data + 0x04u);
+    const float native_position_z = load_float(memory, std_data + 0x08u);
+    const float correction_dx = corrected_x - position_x;
+    const float correction_dy = corrected_y - position_y;
+    const float correction_dz = corrected_z - position_z;
+    if (!std::isfinite(native_position_x) || !std::isfinite(native_position_y) ||
+        !std::isfinite(native_position_z) || !std::isfinite(correction_dx) ||
+        !std::isfinite(correction_dy) || !std::isfinite(correction_dz)) {
+        return;
+    }
+
     store_float(memory, sub_camera + 0x00u, corrected_x);
     store_float(memory, sub_camera + 0x04u, corrected_y);
     store_float(memory, sub_camera + 0x08u, corrected_z);
+    store_float(memory, std_data + 0x00u, native_position_x + correction_dx);
+    store_float(memory, std_data + 0x04u, native_position_y + correction_dy);
+    store_float(memory, std_data + 0x08u, native_position_z + correction_dz);
 
     if (camera_trace_enabled()) {
         static std::uint64_t last_pitch_trace_us = 0u;
