@@ -704,14 +704,8 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
         return;
     }
 
-    const std::uint32_t current_area = range_ok(memory, camera, kCameraAreaConfig, 4u)
-        ? memory.load32(camera + kCameraAreaConfig) : 0u;
-    const std::uint32_t current_player = range_ok(memory, camera, kCameraPlayer, 4u)
-        ? memory.load32(camera + kCameraPlayer) : 0u;
     const std::uint8_t area_sub_id = range_ok(memory, camera, kCameraAreaSubCameraId, 1u)
         ? memory.load8(camera + kCameraAreaSubCameraId) : 0xFFu;
-    const std::uint8_t move_type = range_ok(memory, current_area, kAreaMoveType, 1u)
-        ? memory.load8(current_area + kAreaMoveType) : 0xFFu;
 
     // STD runs before STG in Camera::CameraMove. When the selected area camera is
     // STG, leave it alone here: the dedicated cam_sub_stg replacement below owns
