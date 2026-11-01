@@ -189,7 +189,7 @@ bool is_hunt_camera_context(const psprecomp::GuestMemory &memory, std::uint32_t 
     constexpr char kGameTaskName[] = "game_task";
     const bool name_is_game_task =
         std::strncmp(overlay_name, kGameTaskName, sizeof(kGameTaskName) - 1u) == 0 &&
-        (overlay_name[sizeof(kGameTaskName) - 1u] == '\\0' ||
+        (overlay_name[sizeof(kGameTaskName) - 1u] == '\0' ||
          overlay_name[sizeof(kGameTaskName) - 1u] == '.');
     const bool game_task_overlay =
         overlay_header_ok && overlay_magic == kOverlayHeaderMagic && name_is_game_task;
