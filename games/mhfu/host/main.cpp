@@ -31,9 +31,13 @@
 #include <bit>
 #include <cmath>
 #include <array>
+#include <chrono>
 #include <cstdio>
+#include <ctime>
 #include <filesystem>
 #include <functional>
+#include <iomanip>
+#include <sstream>
 
 #if defined(MHF_HAS_FRONTEND)
 #include "psp_frontend.hpp"
@@ -41,6 +45,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 #include <string>
 #include <utility>
 #include <vector>
@@ -55,6 +64,103 @@ using mhf::psp::Context;
 using mhf::psp::Runtime;
 
 bool g_log_overlays = true;
+
+// The game used to write diagnostics to its console. Keep those messages,
+// including automatic camera traces, in one file per session instead.
+
+// The game used to write diagnostics to its console. Keep those messages,
+// including automatic camera traces, in one file per session instead.
+void configure_automatic_logging() {
+    namespace fs = std::filesystem;
+    fs::path data_root;
+    if (const char *custom_root = std::getenv("MHF_DATA_DIR");
+        custom_root != nullptr && *custom_root != '\0') {
+        data_root = fs::path(custom_root);
+    }
+#ifdef _WIN32
+    else if (const char *app_data = std::getenv("APPDATA");
+             app_data != nullptr && *app_data != '\0') {
+        data_root = fs::path(app_data) / "MHForever";
+    } else if (const char *local_app_data = std::getenv("LOCALAPPDATA");
+               local_app_data != nullptr && *local_app_data != '\0') {
+        data_root = fs::path(local_app_data) / "MHForever";
+    }
+#else
+    else if (const char *xdg_data = std::getenv("XDG_DATA_HOME");
+             xdg_data != nullptr && *xdg_data != '\0') {
+        data_root = fs::path(xdg_data) / "MHForever";
+    } else if (const char *home = std::getenv("HOME");
+               home != nullptr && *home != '\0') {
+        data_root = fs::path(home) / ".local" / "share" / "MHForever";
+    }
+#endif
+    if (data_root.empty()) {
+        std::error_code path_error;
+        data_root = fs::temp_directory_path(path_error) / "MHForever";
+        if (path_error) return;
+    }
+
+    const fs::path log_directory = data_root / "logs";
+    std::error_code directory_error;
+    fs::create_directories(log_directory, directory_error);
+    if (directory_error) return;
+
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t now_time = std::chrono::system_clock::to_time_t(now);
+    std::tm local_time{};
+#ifdef _WIN32
+    if (localtime_s(&local_time, &now_time) != 0) return;
+#else
+    if (localtime_r(&now_time, &local_time) == nullptr) return;
+#endif
+    char timestamp[24]{};
+    if (std::strftime(timestamp, sizeof(timestamp), "%Y%m%d-%H%M%S", &local_time) == 0u) return;
+    const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()).count() % 1000;
+
+#ifdef _WIN32
+    const int process_id = _getpid();
+#else
+    const int process_id = static_cast<int>(getpid());
+#endif
+    std::ostringstream filename;
+    filename << "mhfu-" << timestamp << '-'
+             << std::setw(3) << std::setfill('0') << milliseconds
+             << '-' << process_id << ".log";
+    const fs::path log_path = log_directory / filename.str();
+
+    static std::FILE *session_log = nullptr;
+#ifdef _WIN32
+    session_log = _wfopen(log_path.c_str(), L"ab");
+    if (session_log == nullptr) return;
+    const int log_descriptor = _fileno(session_log);
+    if (log_descriptor < 0 ||
+        _dup2(log_descriptor, _fileno(stdout)) != 0 ||
+        _dup2(log_descriptor, _fileno(stderr)) != 0) {
+        return;
+    }
+#else
+    session_log = std::fopen(log_path.c_str(), "ab");
+    if (session_log == nullptr) return;
+    const int log_descriptor = fileno(session_log);
+    if (log_descriptor < 0 ||
+        dup2(log_descriptor, STDOUT_FILENO) < 0 ||
+        dup2(log_descriptor, STDERR_FILENO) < 0) {
+        return;
+    }
+#endif
+    std::setvbuf(session_log, nullptr, _IONBF, 0);
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    std::setvbuf(stderr, nullptr, _IONBF, 0);
+    std::fprintf(stderr, "[mhfu] automatic session log enabled\\n");
+
+    // camera_trace_enabled() reads this flag once, on its first use.
+#ifdef _WIN32
+    _putenv_s("MHF_CAMERA_LOG", "1");
+#else
+    setenv("MHF_CAMERA_LOG", "1", 1);
+#endif
+}
 
 // Scripted input for unattended runs: "12.5:cross,15:start" presses each button for 150 ms at that time;
 // "20:sup/3" holds the analog stick up (sup, sdown, sleft, sright) or a button for 3 seconds.
@@ -177,6 +283,7 @@ std::string window_title(const std::filesystem::path &disc_image) {
 } // namespace
 
 int main(int argc, char **argv) {
+    configure_automatic_logging();
     mhf::psp::RuntimeOptions options;
     std::string exe;
     std::filesystem::path dump_folder;
