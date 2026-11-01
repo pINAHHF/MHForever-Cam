@@ -1115,7 +1115,46 @@ void replace_stage_camera(Runtime &runtime, Context &context, GuestFunction orig
         return;
     }
 
-    if (!is_hunt_camera_context(memory, camera)) {
+    const std::uint8_t area_sub_id = memory.load8(camera + kCameraAreaSubCameraId);
+    const std::uint32_t area = memory.load32(camera + kCameraAreaConfig);
+    const std::uint32_t player = memory.load32(camera + kCameraPlayer);
+    const bool area_type_ok = range_ok(memory, area, kAreaMoveType, 1u);
+    const std::uint8_t area_move_type = area_type_ok
+        ? memory.load8(area + kAreaMoveType) : 0xFFu;
+    const bool player_action_ok = range_ok(memory, player, kPlayerActionType, 1u);
+    const std::uint8_t player_action = player_action_ok
+        ? memory.load8(player + kPlayerActionType) : 0xFFu;
+    const bool hunt_context = is_hunt_camera_context(memory, camera);
+    const bool is_offset_pan = area_sub_id == 2u && area_type_ok && area_move_type == 3u;
+
+    // This decision line is intentionally separate from the singleton trace:
+    // it tells village and active-quest callback states apart and shows whether
+    // the current camera area is eligible for the offset-pan implementation.
+    if (camera_trace_enabled()) {
+        static std::uint64_t last_decision_trace_us = 0u;
+        const std::uint64_t now = runtime.now_us();
+        if (last_decision_trace_us == 0u || now < last_decision_trace_us ||
+            now - last_decision_trace_us >= 500'000u) {
+            const ControllerState &pad = controller_state(runtime);
+            std::fprintf(stderr,
+                "[mhfu-camera] STG decision hunt=%u area_sub=%u area=0x%08X "
+                "area_type=%u area_type_ok=%u offset_pan=%u player=0x%08X "
+                "player_action=%u player_action_ok=%u rx=%+.3f ry=%+.3f\n",
+                static_cast<unsigned>(hunt_context),
+                static_cast<unsigned>(area_sub_id),
+                static_cast<unsigned>(area),
+                static_cast<unsigned>(area_move_type),
+                static_cast<unsigned>(area_type_ok),
+                static_cast<unsigned>(is_offset_pan),
+                static_cast<unsigned>(player),
+                static_cast<unsigned>(player_action),
+                static_cast<unsigned>(player_action_ok),
+                static_cast<double>(pad.rx), static_cast<double>(pad.ry));
+            last_decision_trace_us = now;
+        }
+    }
+
+    if (!hunt_context) {
         restore_standard_camera_profile(memory);
         restore_offset_pan_profile(memory);
         g_orbit = {};
@@ -1124,13 +1163,6 @@ void replace_stage_camera(Runtime &runtime, Context &context, GuestFunction orig
         if (original != nullptr) original(runtime, context);
         return;
     }
-
-    const std::uint8_t area_sub_id = memory.load8(camera + kCameraAreaSubCameraId);
-    const std::uint32_t area = memory.load32(camera + kCameraAreaConfig);
-    const std::uint32_t player = memory.load32(camera + kCameraPlayer);
-    const bool is_offset_pan = area_sub_id == 2u &&
-        range_ok(memory, area, kAreaMoveType, 1u) &&
-        memory.load8(area + kAreaMoveType) == 3u;
 
     if (!is_offset_pan) {
         if (g_orbit.active && g_orbit.mode == kOrbitModeOffsetPan) {
