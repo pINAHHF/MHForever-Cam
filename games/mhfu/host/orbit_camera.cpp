@@ -13,6 +13,7 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -178,7 +179,7 @@ bool is_lobby_or_unknown(const psprecomp::GuestMemory &memory, char *reason,
     const std::uint32_t game_sys = memory.load32(slot);
     if (game_sys < 0x08800000u || game_sys >= 0x0A000000u) {
         std::snprintf(reason, reason_size,
-                      "GameSys slot 0x%08X contains implausible pointer 0x%08X", slot, game_sys);
+                      "GameSys slot 0x%08X contains implausible pointer 0x%08X", static_cast<unsigned>(slot), static_cast<unsigned>(game_sys));
         return true;
     }
     if (!range_ok(memory, game_sys, kGameSysFlags, 4u) ||
@@ -197,18 +198,18 @@ bool is_lobby_or_unknown(const psprecomp::GuestMemory &memory, char *reason,
     if (player_id >= 4u || is_demo > 1u || is_gallery_task > 1u) {
         std::snprintf(reason, reason_size,
                       "GameSys fields look invalid at 0x%08X (player_id=%u demo=%u gallery=%u flags=0x%08X)",
-                      game_sys, player_id, is_demo, is_gallery_task, flags);
+                      static_cast<unsigned>(game_sys), static_cast<unsigned>(player_id), static_cast<unsigned>(is_demo), static_cast<unsigned>(is_gallery_task), static_cast<unsigned>(flags));
         return true;
     }
     if (is_demo != 0u || is_gallery_task != 0u) {
         std::snprintf(reason, reason_size,
                       "GameSys is special context at 0x%08X (demo=%u gallery=%u)",
-                      game_sys, is_demo, is_gallery_task);
+                      static_cast<unsigned>(game_sys), static_cast<unsigned>(is_demo), static_cast<unsigned>(is_gallery_task));
         return true;
     }
     if ((flags & kLobbyTaskFlag) != 0u) {
         std::snprintf(reason, reason_size,
-                      "GameSys lobby flag is set at 0x%08X (flags=0x%08X)", game_sys, flags);
+                      "GameSys lobby flag is set at 0x%08X (flags=0x%08X)", static_cast<unsigned>(game_sys), static_cast<unsigned>(flags));
         return true;
     }
     reason[0] = '\0';
@@ -313,28 +314,28 @@ bool standard_camera_context(const psprecomp::GuestMemory &memory, std::uint32_t
     if (area_sub_id != 0u) {
         std::snprintf(reject_reason, reject_reason_size,
                       "area_sub_camera_id=%u (STD is 0), move_type=%s%u area=0x%08X",
-                      area_sub_id, area_type_readable ? "" : "unreadable/",
-                      move_type, area_candidate);
+                      static_cast<unsigned>(area_sub_id), area_type_readable ? "" : "unreadable/",
+                      static_cast<unsigned>(move_type), static_cast<unsigned>(area_candidate));
         return false;
     }
 
     const std::uint8_t changing_area = memory.load8(camera + kCameraIsChangingArea);
     if (changing_area != 0u) {
         std::snprintf(reject_reason, reject_reason_size,
-                      "camera is changing area (is_changing_area=%u)", changing_area);
+                      "camera is changing area (is_changing_area=%u)", static_cast<unsigned>(changing_area));
         return false;
     }
     const std::uint8_t wyvern_find_player = memory.load8(camera + kCameraWyvernFindPlayer);
     if (wyvern_find_player != 0u) {
         std::snprintf(reject_reason, reject_reason_size,
-                      "wyvern-find-player camera mode is active (flag=%u)", wyvern_find_player);
+                      "wyvern-find-player camera mode is active (flag=%u)", static_cast<unsigned>(wyvern_find_player));
         return false;
     }
 
     const std::uint8_t last_sub_camera = memory.load8(camera + kCameraLastSubCameraId);
     if (last_sub_camera != 0u) {
         std::snprintf(reject_reason, reject_reason_size,
-                      "last_sub_camera_id=%u (expected STD=0)", last_sub_camera);
+                      "last_sub_camera_id=%u (expected STD=0)", static_cast<unsigned>(last_sub_camera));
         return false;
     }
 
@@ -343,7 +344,7 @@ bool standard_camera_context(const psprecomp::GuestMemory &memory, std::uint32_t
     if (current_id != 0xFFu || state != 0u) {
         std::snprintf(reject_reason, reject_reason_size,
                       "STD subcamera state mismatch (current_id=0x%02X state=%u)",
-                      current_id, state);
+                      static_cast<unsigned>(current_id), static_cast<unsigned>(state));
         return false;
     }
 
@@ -355,7 +356,7 @@ bool standard_camera_context(const psprecomp::GuestMemory &memory, std::uint32_t
         const std::uint8_t active_value = memory.load8(active);
         if (active_value != 0u) {
             std::snprintf(reject_reason, reject_reason_size,
-                          "special subcamera %u is active (isActive=%u)", id, active_value);
+                          "special subcamera %u is active (isActive=%u)", static_cast<unsigned>(id), static_cast<unsigned>(active_value));
             return false;
         }
     }
@@ -363,7 +364,7 @@ bool standard_camera_context(const psprecomp::GuestMemory &memory, std::uint32_t
     const std::uint8_t active_sub_camera = memory.load8(camera + 0xDC4u);
     if (active_sub_camera == 3u || active_sub_camera == 4u || active_sub_camera == 5u) {
         std::snprintf(reject_reason, reject_reason_size,
-                      "active subcamera id=%u is a special mode", active_sub_camera);
+                      "active subcamera id=%u is a special mode", static_cast<unsigned>(active_sub_camera));
         return false;
     }
 
@@ -381,7 +382,7 @@ bool standard_camera_context(const psprecomp::GuestMemory &memory, std::uint32_t
 
     if (move_type != 0u) {
         std::snprintf(reject_reason, reject_reason_size,
-                      "area move_type=%u is not STD follow (area=0x%08X)", move_type, area_out);
+                      "area move_type=%u is not STD follow (area=0x%08X)", static_cast<unsigned>(move_type), static_cast<unsigned>(area_out));
         return false;
     }
 
