@@ -67,6 +67,14 @@ constexpr std::uint32_t kGameSysFlags = 0x6AF14u;
 constexpr std::uint32_t kGameSysFlagLobbyTask = 1u << 0u;
 constexpr std::uint32_t kGameSysFlagGameTask = 1u << 9u;
 
+// EU reference slots from the public MHP2G symbol map. The US +0x120
+// translations are being checked against live memory because three of them
+// currently read as null in the user's ULUS10391 runtime.
+constexpr std::uint32_t kEuGameSysSingleton = 0x089C7508u;
+constexpr std::uint32_t kEuGameTaskSingleton = 0x09A40998u;
+constexpr std::uint32_t kEuTaskManagerSingleton = 0x08A862B8u;
+constexpr std::uint32_t kEuSystemSingleton = 0x08A5E270u;
+
 constexpr std::uint32_t kStdIsFalldown = 0x35u;
 constexpr std::uint32_t kStdIsViewBlocked = 0x89u;
 constexpr std::uint32_t kStdKabegiwaTimer = 0x8Bu;
@@ -205,10 +213,28 @@ bool is_hunt_camera_context(const psprecomp::GuestMemory &memory) {
         system = memory.load32(MHF_MHFU_SYSTEM_SINGLETON);
     }
 
-    char reason[192]{};
+    const bool gs_slot_ok = memory.contains(MHF_MHFU_GAME_SYS_SINGLETON, 4u);
+    const bool gt_slot_ok = MHF_MHFU_GAME_TASK_SINGLETON != 0u &&
+        memory.contains(MHF_MHFU_GAME_TASK_SINGLETON, 4u);
+    const bool tm_slot_ok = MHF_MHFU_TASK_MANAGER_SINGLETON != 0u &&
+        memory.contains(MHF_MHFU_TASK_MANAGER_SINGLETON, 4u);
+    const bool sys_slot_ok = MHF_MHFU_SYSTEM_SINGLETON != 0u &&
+        memory.contains(MHF_MHFU_SYSTEM_SINGLETON, 4u);
+    const std::uint32_t eu_game_sys = memory.contains(kEuGameSysSingleton, 4u)
+        ? memory.load32(kEuGameSysSingleton) : 0u;
+    const std::uint32_t eu_game_task = memory.contains(kEuGameTaskSingleton, 4u)
+        ? memory.load32(kEuGameTaskSingleton) : 0u;
+    const std::uint32_t eu_task_manager = memory.contains(kEuTaskManagerSingleton, 4u)
+        ? memory.load32(kEuTaskManagerSingleton) : 0u;
+    const std::uint32_t eu_system = memory.contains(kEuSystemSingleton, 4u)
+        ? memory.load32(kEuSystemSingleton) : 0u;
+
+    char reason[384]{};
     std::snprintf(reason, sizeof(reason),
                   "GS=%08X sys=%08X pre=%u stg=%u map=%u mis=%u fl=%08X G=%u L=%u "
-                  "GT=%08X TM=%08X active=(%08X,%08X,%08X,%08X) live=%u",
+                  "GT=%08X TM=%08X active=(%08X,%08X,%08X,%08X) live=%u "
+                  "slots=(%08X,%08X,%08X,%08X) ok=(%u,%u,%u,%u) "
+                  "EU=(%08X,%08X,%08X,%08X)",
                   static_cast<unsigned>(game_sys),
                   static_cast<unsigned>(system),
                   static_cast<unsigned>(pre_flag),
@@ -224,7 +250,19 @@ bool is_hunt_camera_context(const psprecomp::GuestMemory &memory) {
                   static_cast<unsigned>(active_tasks[1]),
                   static_cast<unsigned>(active_tasks[2]),
                   static_cast<unsigned>(active_tasks[3]),
-                  static_cast<unsigned>(game_task_active));
+                  static_cast<unsigned>(game_task_active),
+                  static_cast<unsigned>(MHF_MHFU_GAME_SYS_SINGLETON),
+                  static_cast<unsigned>(MHF_MHFU_GAME_TASK_SINGLETON),
+                  static_cast<unsigned>(MHF_MHFU_TASK_MANAGER_SINGLETON),
+                  static_cast<unsigned>(MHF_MHFU_SYSTEM_SINGLETON),
+                  static_cast<unsigned>(gs_slot_ok),
+                  static_cast<unsigned>(gt_slot_ok),
+                  static_cast<unsigned>(tm_slot_ok),
+                  static_cast<unsigned>(sys_slot_ok),
+                  static_cast<unsigned>(eu_game_sys),
+                  static_cast<unsigned>(eu_game_task),
+                  static_cast<unsigned>(eu_task_manager),
+                  static_cast<unsigned>(eu_system));
     camera_trace(reason);
 
     if (lobby_task) return false;
