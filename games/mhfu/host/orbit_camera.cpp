@@ -163,28 +163,56 @@ std::uint16_t angle_to_units(float radians) {
     return static_cast<std::uint16_t>(rounded);
 }
 
-bool is_lobby_or_unknown(const psprecomp::GuestMemory &memory) {
+bool is_lobby_or_unknown(const psprecomp::GuestMemory &memory, char *reason,
+                         std::size_t reason_size) {
 #if MHF_MHFU_GAME_SYS_SINGLETON == 0
     (void)memory;
+    std::snprintf(reason, reason_size, "GameSys singleton symbol is disabled");
     return true;
 #else
     constexpr std::uint32_t slot = MHF_MHFU_GAME_SYS_SINGLETON;
-    if (!memory.contains(slot, 4u)) return true;
+    if (!memory.contains(slot, 4u)) {
+        std::snprintf(reason, reason_size, "GameSys slot 0x%08X is outside guest memory", slot);
+        return true;
+    }
     const std::uint32_t game_sys = memory.load32(slot);
-    if (game_sys < 0x08800000u || game_sys >= 0x0A000000u ||
-        !range_ok(memory, game_sys, kGameSysFlags, 4u) ||
+    if (game_sys < 0x08800000u || game_sys >= 0x0A000000u) {
+        std::snprintf(reason, reason_size,
+                      "GameSys slot 0x%08X contains implausible pointer 0x%08X", slot, game_sys);
+        return true;
+    }
+    if (!range_ok(memory, game_sys, kGameSysFlags, 4u) ||
         !range_ok(memory, game_sys, 0x28u, 1u) ||
         !range_ok(memory, game_sys, 0x422u, 1u) ||
         !range_ok(memory, game_sys, 0x480u, 1u)) {
+        std::snprintf(reason, reason_size,
+                      "GameSys pointer 0x%08X has fields outside guest memory", game_sys);
         return true;
     }
-    // These independent fields make a false-positive singleton match very unlikely.
+
     const std::uint8_t player_id = memory.load8(game_sys + 0x28u);
     const std::uint8_t is_demo = memory.load8(game_sys + 0x422u);
     const std::uint8_t is_gallery_task = memory.load8(game_sys + 0x480u);
-    if (player_id >= 4u || is_demo > 1u || is_gallery_task > 1u) return true;
-    if (is_demo != 0u || is_gallery_task != 0u) return true;
-    return (memory.load32(game_sys + kGameSysFlags) & kLobbyTaskFlag) != 0u;
+    const std::uint32_t flags = memory.load32(game_sys + kGameSysFlags);
+    if (player_id >= 4u || is_demo > 1u || is_gallery_task > 1u) {
+        std::snprintf(reason, reason_size,
+                      "GameSys fields look invalid at 0x%08X (player_id=%u demo=%u gallery=%u flags=0x%08X)",
+                      game_sys, player_id, is_demo, is_gallery_task, flags);
+        return true;
+    }
+    if (is_demo != 0u || is_gallery_task != 0u) {
+        std::snprintf(reason, reason_size,
+                      "GameSys is special context at 0x%08X (demo=%u gallery=%u)",
+                      game_sys, is_demo, is_gallery_task);
+        return true;
+    }
+    if ((flags & kLobbyTaskFlag) != 0u) {
+        std::snprintf(reason, reason_size,
+                      "GameSys lobby flag is set at 0x%08X (flags=0x%08X)", game_sys, flags);
+        return true;
+    }
+    reason[0] = '\0';
+    return false;
 #endif
 }
 
@@ -257,8 +285,12 @@ bool special_player_state(const psprecomp::GuestMemory &memory, std::uint32_t pl
 
 bool standard_camera_context(const psprecomp::GuestMemory &memory, std::uint32_t sub_camera,
                              std::uint32_t camera, std::uint32_t &area_out,
-                             std::uint32_t &player_out, const char *&reject_reason) {
-    reject_reason = "unknown context rejection";
+                             std::uint32_t &player_out, char *reject_reason,
+                             std::size_t reject_reason_size) {
+    auto reject = [&](const char *message) {
+        std::snprintf(reject_reason, reject_reason_size, "%s", message);
+        return false;
+    };
     if (!range_ok(memory, camera, kCameraAreaSubCameraId, 1u) ||
         !range_ok(memory, camera, kCameraAreaConfig, 4u) ||
         !range_ok(memory, camera, kCameraPlayer, 4u) ||
@@ -270,81 +302,92 @@ bool standard_camera_context(const psprecomp::GuestMemory &memory, std::uint32_t
         !range_ok(memory, camera, 0xDC4u, 1u) ||
         !range_ok(memory, sub_camera, kSubCameraCurrentId, 1u) ||
         !range_ok(memory, sub_camera, kSubCameraState, 1u)) {
-        reject_reason = "camera/subcamera field outside guest memory";
+        return reject("camera/subcamera structure range validation failed");
+    }
+
+    const std::uint8_t area_sub_id = memory.load8(camera + kCameraAreaSubCameraId);
+    const std::uint8_t move_type = memory.load8(memory.load32(camera + kCameraAreaConfig) + kAreaMoveType);
+    if (area_sub_id != 0u) {
+        std::snprintf(reject_reason, reject_reason_size,
+                      "area_sub_camera_id=%u (STD is 0), area move_type=%u",
+                      area_sub_id, move_type);
         return false;
     }
 
-    if (memory.load8(camera + kCameraAreaSubCameraId) != 0u) {
-        reject_reason = "area_sub_camera_id is nonzero";
+    const std::uint8_t changing_area = memory.load8(camera + kCameraIsChangingArea);
+    if (changing_area != 0u) {
+        std::snprintf(reject_reason, reject_reason_size,
+                      "camera is changing area (is_changing_area=%u)", changing_area);
         return false;
     }
-    if (memory.load8(camera + kCameraIsChangingArea) != 0u) {
-        reject_reason = "camera is changing area";
-        return false;
-    }
-    if (memory.load8(camera + kCameraWyvernFindPlayer) != 0u) {
-        reject_reason = "wyvern-find-player camera mode is active";
+    const std::uint8_t wyvern_find_player = memory.load8(camera + kCameraWyvernFindPlayer);
+    if (wyvern_find_player != 0u) {
+        std::snprintf(reject_reason, reject_reason_size,
+                      "wyvern-find-player camera mode is active (flag=%u)", wyvern_find_player);
         return false;
     }
 
     const std::uint8_t last_sub_camera = memory.load8(camera + kCameraLastSubCameraId);
     if (last_sub_camera != 0u) {
-        reject_reason = "last_sub_camera_id is nonzero";
+        std::snprintf(reject_reason, reject_reason_size,
+                      "last_sub_camera_id=%u (expected STD=0)", last_sub_camera);
         return false;
     }
 
     const std::uint8_t current_id = memory.load8(sub_camera + kSubCameraCurrentId);
     const std::uint8_t state = memory.load8(sub_camera + kSubCameraState);
-    if (current_id != 0xFFu) {
-        reject_reason = "standard subcamera current_id is not 0xFF";
-        return false;
-    }
-    if (state != 0u) {
-        reject_reason = "standard subcamera state is nonzero";
+    if (current_id != 0xFFu || state != 0u) {
+        std::snprintf(reject_reason, reject_reason_size,
+                      "STD subcamera state mismatch (current_id=0x%02X state=%u)",
+                      current_id, state);
         return false;
     }
 
     for (const std::uint32_t id : {3u, 4u, 5u}) {
         const std::uint32_t active = camera + kCameraFromSubCamera + id * kSubCameraStride + kSubCameraIsActive;
         if (!memory.contains(active, 1u)) {
-            reject_reason = "special subcamera active flag outside guest memory";
-            return false;
+            return reject("special subcamera active flag outside guest memory");
         }
-        if (memory.load8(active) != 0u) {
-            reject_reason = id == 3u ? "PCHNGR subcamera is active" :
-                            id == 4u ? "PLAYER_EX subcamera is active" : "DEMO subcamera is active";
+        const std::uint8_t active_value = memory.load8(active);
+        if (active_value != 0u) {
+            std::snprintf(reject_reason, reject_reason_size,
+                          "special subcamera %u is active (isActive=%u)", id, active_value);
             return false;
         }
     }
 
     const std::uint8_t active_sub_camera = memory.load8(camera + 0xDC4u);
     if (active_sub_camera == 3u || active_sub_camera == 4u || active_sub_camera == 5u) {
-        reject_reason = "active subcamera id is a special mode";
+        std::snprintf(reject_reason, reject_reason_size,
+                      "active subcamera id=%u is a special mode", active_sub_camera);
         return false;
     }
 
     area_out = memory.load32(camera + kCameraAreaConfig);
     player_out = memory.load32(camera + kCameraPlayer);
     if (area_out == 0u || player_out == 0u) {
-        reject_reason = "area or player pointer is null";
-        return false;
+        return reject("area or player pointer is null");
     }
     if (!range_ok(memory, area_out, kAreaHeightDefinition + kFollowEntriesOffset +
                                     kFollowEntryCount * kFollowEntryStride, 1u)) {
-        reject_reason = "area follow-profile structure outside guest memory";
+        std::snprintf(reject_reason, reject_reason_size,
+                      "area follow-profile range invalid (area=0x%08X)", area_out);
         return false;
     }
 
-    if (memory.load8(area_out + kAreaMoveType) != 0u) {
-        reject_reason = "area move type is not standard follow";
-        return false;
-    }
-    if (is_lobby_or_unknown(memory)) {
-        reject_reason = "GameSys singleton validation rejected context (or lobby flag set)";
+    if (move_type != 0u) {
+        std::snprintf(reject_reason, reject_reason_size,
+                      "area move_type=%u is not STD follow (area=0x%08X)", move_type, area_out);
         return false;
     }
 
-    reject_reason = nullptr;
+    char singleton_reason[160]{};
+    if (is_lobby_or_unknown(memory, singleton_reason, sizeof(singleton_reason))) {
+        std::snprintf(reject_reason, reject_reason_size, "%s", singleton_reason);
+        return false;
+    }
+
+    reject_reason[0] = '\0';
     return true;
 }
 
@@ -421,10 +464,12 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
 
     std::uint32_t area = 0u;
     std::uint32_t player = 0u;
-    const char *context_rejection = nullptr;
-    if (!standard_camera_context(memory, sub_camera, camera, area, player, context_rejection)) {
-        char message[192]{};
-        std::snprintf(message, sizeof(message), "fallback: standard context rejected: %s", context_rejection ? context_rejection : "unspecified");
+    char context_rejection[192]{};
+    if (!standard_camera_context(memory, sub_camera, camera, area, player,
+                                 context_rejection, sizeof(context_rejection))) {
+        char message[224]{};
+        std::snprintf(message, sizeof(message), "fallback: standard context rejected: %s",
+                      context_rejection[0] != '\0' ? context_rejection : "unspecified");
         fallback(runtime, context, original, message);
         return;
     }
