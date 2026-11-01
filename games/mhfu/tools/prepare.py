@@ -118,6 +118,7 @@ def main():
 
     camera_supported = a.region in ("ULES01213", "ULUS10391")
     game_sys_singleton = region_symbol(region_dir, "data", "mh_game_sys_singleton") if camera_supported else 0
+    quest_singleton = region_symbol(region_dir, "data", "mh_quest_singleton") if camera_supported else 0
     game_task_singleton = region_symbol(region_dir, "data", "mh_game_task_singleton") if camera_supported else 0
     task_manager_singleton = region_symbol(region_dir, "data", "mh_task_manager_singleton") if camera_supported else 0
     system_singleton = region_symbol(region_dir, "data", "mh_system_singleton") if camera_supported else 0
