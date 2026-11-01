@@ -322,7 +322,7 @@ GamepadState SdlHost::input() const {
                              name != nullptr ? name : "(unknown)",
                              static_cast<int>(raw_x), static_cast<int>(raw_y));
             }
-            std::fputc('\\n', stderr);
+            std::fputc('\n', stderr);
             last_trace_ms = now_ms;
         }
     }
