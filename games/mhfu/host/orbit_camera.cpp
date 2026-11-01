@@ -434,9 +434,11 @@ bool special_player_action(const psprecomp::GuestMemory &memory, std::uint32_t p
     if (ride_state != 0u || dialog_timer != 0u || scope_aim != 0u ||
         (player_flags & (kPlFlagSupplyBoxOpen | kPlFlagDeliveryBoxOpen |
                          kPlFlagScopeCam | kPlFlagShoulderCam | kPlFlagFishing)) != 0u) {
-        char reason[192]{};
+        char reason[224]{};
         std::snprintf(reason, sizeof(reason),
-                      "protected auxiliary state ride=%u dialog=%u scope=%u flags=%08X",
+                      "protected auxiliary type=%u id=%u ride=%u dialog=%u scope=%u flags=%08X",
+                      static_cast<unsigned>(action_type),
+                      static_cast<unsigned>(action_id),
                       static_cast<unsigned>(ride_state),
                       static_cast<unsigned>(dialog_timer),
                       static_cast<unsigned>(scope_aim),
@@ -1161,9 +1163,8 @@ void apply_standard_orbit_pitch_after_native(Runtime &runtime, std::uint32_t cam
         memory.load8(std_data + kStdIsGroundAdjusted) != 0u;
     const float native_safe_goal_y =
         load_float(memory, std_data + kStdGoalPosition + 4u);
-    const float corrected_y = std::isfinite(native_safe_goal_y)
-        ? std::max(requested_y, native_safe_goal_y)
-        : requested_y;
+    if (!std::isfinite(native_safe_goal_y)) return;
+    const float corrected_y = std::max(requested_y, native_safe_goal_y);
     const bool floor_clamped = corrected_y > requested_y + 0.5f;
 
     const float corrected_vertical = corrected_y - target_y;
