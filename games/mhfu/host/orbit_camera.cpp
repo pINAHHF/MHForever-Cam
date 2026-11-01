@@ -32,7 +32,7 @@ bool camera_trace_enabled() {
 
 void camera_trace(const char *reason) {
     if (!camera_trace_enabled()) return;
-    static std::array<std::array<char, 192>, 16> seen{};
+    static std::array<std::array<char, 512>, 16> seen{};
     for (const auto &entry : seen) {
         if (entry[0] != '\0' && std::strcmp(entry.data(), reason) == 0) return;
     }
@@ -67,6 +67,14 @@ constexpr std::uint32_t kCameraAreaConfig = 0xA90u;
 constexpr std::uint32_t kGameSysFlags = 0x6AF14u;
 constexpr std::uint32_t kGameSysFlagLobbyTask = 1u << 0u;
 constexpr std::uint32_t kGameSysFlagGameTask = 1u << 9u;
+
+// MHFU swaps task overlays into this fixed slot. The active overlay header
+// identifies game_task.ovl versus lobby_task.ovl without relying on P2G
+// singleton addresses that are not populated reliably in the US MHFU runtime.
+constexpr std::uint32_t kTaskOverlayBase = 0x09A5F300u;
+constexpr std::uint32_t kOverlayHeaderMagic = 0x336F574Du; // "MWo3"
+constexpr std::uint32_t kOverlayNameOffset = 0x20u;
+constexpr std::size_t kOverlayNameReadSize = 32u;
 constexpr std::uint32_t kQuestMissionFlagMask =
     (1u << 0u) | (1u << 1u) | (1u << 2u) | (1u << 3u) | (1u << 4u) |
     (1u << 7u) | (1u << 11u) | (1u << 14u) | (1u << 18u) | (1u << 19u) |
@@ -161,10 +169,42 @@ bool range_ok(const psprecomp::GuestMemory &memory, std::uint32_t base,
 }
 
 bool is_hunt_camera_context(const psprecomp::GuestMemory &memory, std::uint32_t camera) {
+    // MHFU-specific task detection. The task overlay header at 0x09A5F300 is
+    // swapped between lobby_task.ovl and game_task.ovl as the game changes
+    // contexts. Read its MWo3 header and name directly.
+    std::uint32_t overlay_magic = 0u;
+    char overlay_name[kOverlayNameReadSize]{};
+    const bool overlay_header_ok =
+        memory.contains(kTaskOverlayBase, kOverlayNameOffset + kOverlayNameReadSize);
+    if (overlay_header_ok) {
+        overlay_magic = memory.load32(kTaskOverlayBase);
+        for (std::size_t i = 0; i + 1u < sizeof(overlay_name); ++i) {
+            const std::uint8_t ch = memory.load8(
+                kTaskOverlayBase + kOverlayNameOffset + static_cast<std::uint32_t>(i));
+            if (ch == 0u) break;
+            overlay_name[i] = (ch >= 0x20u && ch <= 0x7Eu)
+                ? static_cast<char>(ch) : '?';
+        }
+    }
+    constexpr char kGameTaskName[] = "game_task";
+    const bool name_is_game_task =
+        std::strncmp(overlay_name, kGameTaskName, sizeof(kGameTaskName) - 1u) == 0 &&
+        (overlay_name[sizeof(kGameTaskName) - 1u] == '\\0' ||
+         overlay_name[sizeof(kGameTaskName) - 1u] == '.');
+    const bool game_task_overlay =
+        overlay_header_ok && overlay_magic == kOverlayHeaderMagic && name_is_game_task;
+
     if (MHF_MHFU_GAME_SYS_SINGLETON == 0u ||
         !memory.contains(MHF_MHFU_GAME_SYS_SINGLETON, 4u)) {
-        camera_trace("camera task guard: GameSys singleton slot is unavailable");
-        return false;
+        char reason[192]{};
+        std::snprintf(reason, sizeof(reason),
+                      "task overlay name='%s' magic=%08X valid=%u game_task=%u; "
+                      "GameSys singleton slot unavailable",
+                      overlay_name, static_cast<unsigned>(overlay_magic),
+                      static_cast<unsigned>(overlay_header_ok),
+                      static_cast<unsigned>(game_task_overlay));
+        camera_trace(reason);
+        return game_task_overlay;
     }
     const std::uint32_t game_sys = memory.load32(MHF_MHFU_GAME_SYS_SINGLETON);
     if (!range_ok(memory, game_sys, kGameSysFlags, 4u)) {
@@ -245,10 +285,14 @@ bool is_hunt_camera_context(const psprecomp::GuestMemory &memory, std::uint32_t 
 
     char reason[512]{};
     std::snprintf(reason, sizeof(reason),
+                  "taskOvl='%s' magic=%08X gameTaskOvl=%u | "
                   "GS=%08X sys=%08X pre=%u stg=%u map=%u mis=%u fl=%08X G=%u L=%u "
                   "GT=%08X TM=%08X live=%u Q=%08X qf=%08X qe=%08X qa=%u "
                   "camPlayer=%08X pOK=%u act=%u camArea=%08X "
                   "slots=(%08X,%08X,%08X,%08X,%08X) ok=(%u,%u,%u,%u,%u)",
+                  overlay_name,
+                  static_cast<unsigned>(overlay_magic),
+                  static_cast<unsigned>(game_task_overlay),
                   static_cast<unsigned>(game_sys),
                   static_cast<unsigned>(system),
                   static_cast<unsigned>(pre_flag),
@@ -281,8 +325,10 @@ bool is_hunt_camera_context(const psprecomp::GuestMemory &memory, std::uint32_t 
                   static_cast<unsigned>(quest_slot_ok));
     camera_trace(reason);
 
-    if (lobby_task) return false;
-    return game_task_flag || game_task_active || quest_active;
+    // The MHFU task overlay is the authoritative context indicator here.
+    // Keep the old singleton reads in the trace for comparison, but do not let
+    // their zero/uninitialised values disable the camera during a real quest.
+    return game_task_overlay;
 }
 float load_float(const psprecomp::GuestMemory &memory, std::uint32_t address) {
     return std::bit_cast<float>(memory.load32(address));
