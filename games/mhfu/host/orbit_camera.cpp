@@ -6,6 +6,7 @@
 #include "mhfu_camera_support.hpp"
 #else
 #define MHF_MHFU_GAME_SYS_SINGLETON 0u
+#define MHF_MHFU_QUEST_SINGLETON 0u
 #define MHF_MHFU_GAME_TASK_SINGLETON 0u
 #define MHF_MHFU_TASK_MANAGER_SINGLETON 0u
 #define MHF_MHFU_SYSTEM_SINGLETON 0u
@@ -66,6 +67,11 @@ constexpr std::uint32_t kCameraAreaConfig = 0xA90u;
 constexpr std::uint32_t kGameSysFlags = 0x6AF14u;
 constexpr std::uint32_t kGameSysFlagLobbyTask = 1u << 0u;
 constexpr std::uint32_t kGameSysFlagGameTask = 1u << 9u;
+constexpr std::uint32_t kQuestMissionFlagMask =
+    (1u << 0u) | (1u << 1u) | (1u << 2u) | (1u << 3u) | (1u << 4u) |
+    (1u << 7u) | (1u << 11u) | (1u << 14u) | (1u << 18u) | (1u << 19u) |
+    (1u << 21u) | (1u << 22u) | (1u << 23u) | (1u << 24u) | (1u << 25u) |
+    (1u << 26u) | (1u << 29u) | (1u << 30u);
 
 // EU reference slots from the public MHP2G symbol map. The US +0x120
 // translations are being checked against live memory because three of them
@@ -162,7 +168,7 @@ bool range_ok(const psprecomp::GuestMemory &memory, std::uint32_t base,
     return memory.contains(base + offset, length);
 }
 
-bool is_hunt_camera_context(const psprecomp::GuestMemory &memory) {
+bool is_hunt_camera_context(const psprecomp::GuestMemory &memory, std::uint32_t camera) {
     if (MHF_MHFU_GAME_SYS_SINGLETON == 0u ||
         !memory.contains(MHF_MHFU_GAME_SYS_SINGLETON, 4u)) {
         camera_trace("camera task guard: GameSys singleton slot is unavailable");
@@ -182,10 +188,6 @@ bool is_hunt_camera_context(const psprecomp::GuestMemory &memory) {
     const bool lobby_task = (flags & kGameSysFlagLobbyTask) != 0u;
     const bool game_task_flag = (flags & kGameSysFlagGameTask) != 0u;
 
-    // GameTask is a Singleton<GameTask> derived from TaskBase. During a hunt,
-    // its singleton must also appear in TaskManager::active[4]. This avoids
-    // depending exclusively on GameSys::gameSysFlags, which is zero in the
-    // observed runtime even while the gameplay camera callback is running.
     std::uint32_t game_task = 0u;
     if (MHF_MHFU_GAME_TASK_SINGLETON != 0u &&
         memory.contains(MHF_MHFU_GAME_TASK_SINGLETON, 4u)) {
@@ -207,11 +209,37 @@ bool is_hunt_camera_context(const psprecomp::GuestMemory &memory) {
         }
     }
 
-    std::uint32_t system = 0u;
-    if (MHF_MHFU_SYSTEM_SINGLETON != 0u &&
-        memory.contains(MHF_MHFU_SYSTEM_SINGLETON, 4u)) {
-        system = memory.load32(MHF_MHFU_SYSTEM_SINGLETON);
+    std::uint32_t quest = 0u;
+    std::uint32_t quest_flags = 0u;
+    std::uint32_t quest_camera_enemy = 0u;
+    if (MHF_MHFU_QUEST_SINGLETON != 0u &&
+        memory.contains(MHF_MHFU_QUEST_SINGLETON, 4u)) {
+        quest = memory.load32(MHF_MHFU_QUEST_SINGLETON);
+        if (range_ok(memory, quest, 0x24u, 8u)) {
+            quest_camera_enemy = memory.load32(quest + 0x24u);
+            quest_flags = memory.load32(quest + 0x28u);
+        }
     }
+    const bool quest_active = quest != 0u &&
+        (quest_flags & kQuestMissionFlagMask) != 0u;
+
+    std::uint32_t camera_player = 0u;
+    std::uint32_t camera_area = 0u;
+    std::uint8_t player_action = 0xFFu;
+    bool camera_player_ok = false;
+    if (range_ok(memory, camera, kCameraPlayer, 4u)) {
+        camera_player = memory.load32(camera + kCameraPlayer);
+        camera_player_ok = range_ok(memory, camera_player, kPlayerPositionX, 12u) &&
+            range_ok(memory, camera_player, kPlayerActionType, 2u);
+        if (camera_player_ok) player_action = memory.load8(camera_player + kPlayerActionType);
+    }
+    if (range_ok(memory, camera, kCameraAreaConfig, 4u)) {
+        camera_area = memory.load32(camera + kCameraAreaConfig);
+    }
+
+    const std::uint32_t system = MHF_MHFU_SYSTEM_SINGLETON != 0u &&
+        memory.contains(MHF_MHFU_SYSTEM_SINGLETON, 4u)
+        ? memory.load32(MHF_MHFU_SYSTEM_SINGLETON) : 0u;
 
     const bool gs_slot_ok = memory.contains(MHF_MHFU_GAME_SYS_SINGLETON, 4u);
     const bool gt_slot_ok = MHF_MHFU_GAME_TASK_SINGLETON != 0u &&
@@ -220,21 +248,15 @@ bool is_hunt_camera_context(const psprecomp::GuestMemory &memory) {
         memory.contains(MHF_MHFU_TASK_MANAGER_SINGLETON, 4u);
     const bool sys_slot_ok = MHF_MHFU_SYSTEM_SINGLETON != 0u &&
         memory.contains(MHF_MHFU_SYSTEM_SINGLETON, 4u);
-    const std::uint32_t eu_game_sys = memory.contains(kEuGameSysSingleton, 4u)
-        ? memory.load32(kEuGameSysSingleton) : 0u;
-    const std::uint32_t eu_game_task = memory.contains(kEuGameTaskSingleton, 4u)
-        ? memory.load32(kEuGameTaskSingleton) : 0u;
-    const std::uint32_t eu_task_manager = memory.contains(kEuTaskManagerSingleton, 4u)
-        ? memory.load32(kEuTaskManagerSingleton) : 0u;
-    const std::uint32_t eu_system = memory.contains(kEuSystemSingleton, 4u)
-        ? memory.load32(kEuSystemSingleton) : 0u;
+    const bool quest_slot_ok = MHF_MHFU_QUEST_SINGLETON != 0u &&
+        memory.contains(MHF_MHFU_QUEST_SINGLETON, 4u);
 
-    char reason[384]{};
+    char reason[512]{};
     std::snprintf(reason, sizeof(reason),
                   "GS=%08X sys=%08X pre=%u stg=%u map=%u mis=%u fl=%08X G=%u L=%u "
-                  "GT=%08X TM=%08X active=(%08X,%08X,%08X,%08X) live=%u "
-                  "slots=(%08X,%08X,%08X,%08X) ok=(%u,%u,%u,%u) "
-                  "EU=(%08X,%08X,%08X,%08X)",
+                  "GT=%08X TM=%08X live=%u Q=%08X qf=%08X qe=%08X qa=%u "
+                  "camPlayer=%08X pOK=%u act=%u camArea=%08X "
+                  "slots=(%08X,%08X,%08X,%08X,%08X) ok=(%u,%u,%u,%u,%u)",
                   static_cast<unsigned>(game_sys),
                   static_cast<unsigned>(system),
                   static_cast<unsigned>(pre_flag),
@@ -246,29 +268,30 @@ bool is_hunt_camera_context(const psprecomp::GuestMemory &memory) {
                   static_cast<unsigned>(lobby_task),
                   static_cast<unsigned>(game_task),
                   static_cast<unsigned>(task_manager),
-                  static_cast<unsigned>(active_tasks[0]),
-                  static_cast<unsigned>(active_tasks[1]),
-                  static_cast<unsigned>(active_tasks[2]),
-                  static_cast<unsigned>(active_tasks[3]),
                   static_cast<unsigned>(game_task_active),
+                  static_cast<unsigned>(quest),
+                  static_cast<unsigned>(quest_flags),
+                  static_cast<unsigned>(quest_camera_enemy),
+                  static_cast<unsigned>(quest_active),
+                  static_cast<unsigned>(camera_player),
+                  static_cast<unsigned>(camera_player_ok),
+                  static_cast<unsigned>(player_action),
+                  static_cast<unsigned>(camera_area),
                   static_cast<unsigned>(MHF_MHFU_GAME_SYS_SINGLETON),
                   static_cast<unsigned>(MHF_MHFU_GAME_TASK_SINGLETON),
                   static_cast<unsigned>(MHF_MHFU_TASK_MANAGER_SINGLETON),
                   static_cast<unsigned>(MHF_MHFU_SYSTEM_SINGLETON),
+                  static_cast<unsigned>(MHF_MHFU_QUEST_SINGLETON),
                   static_cast<unsigned>(gs_slot_ok),
                   static_cast<unsigned>(gt_slot_ok),
                   static_cast<unsigned>(tm_slot_ok),
                   static_cast<unsigned>(sys_slot_ok),
-                  static_cast<unsigned>(eu_game_sys),
-                  static_cast<unsigned>(eu_game_task),
-                  static_cast<unsigned>(eu_task_manager),
-                  static_cast<unsigned>(eu_system));
+                  static_cast<unsigned>(quest_slot_ok));
     camera_trace(reason);
 
     if (lobby_task) return false;
-    return game_task_flag || game_task_active;
+    return game_task_flag || game_task_active || quest_active;
 }
-
 float load_float(const psprecomp::GuestMemory &memory, std::uint32_t address) {
     return std::bit_cast<float>(memory.load32(address));
 }
@@ -968,7 +991,7 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
                 range_ok(memory, camera, 0xDC4u, 1u);
             const std::uint8_t area_sub = readable ? memory.load8(camera + kCameraAreaSubCameraId) : 0xFFu;
             const std::uint8_t selected = readable ? memory.load8(camera + 0xDC4u) : 0xFFu;
-            const bool hunt = is_hunt_camera_context(memory);
+            const bool hunt = is_hunt_camera_context(memory, camera);
             const ControllerState &pad = controller_state(runtime);
             std::fprintf(stderr,
                 "[mhfu-camera] STD hook this=0x%08X camera=0x%08X area_sub=%u selected=%u "
@@ -985,7 +1008,7 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
         const std::uint32_t camera = sub_camera - kCameraFromSubCamera;
         if (range_ok(memory, camera, kCameraAreaSubCameraId, 1u) &&
             memory.load8(camera + kCameraAreaSubCameraId) == 0u) {
-            if (is_hunt_camera_context(memory)) {
+            if (is_hunt_camera_context(memory, camera)) {
                 update_standard_orbit_before_native(runtime, camera);
             } else {
                 restore_standard_camera_profile(memory);
