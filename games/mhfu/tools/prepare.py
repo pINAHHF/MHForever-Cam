@@ -122,7 +122,8 @@ def main():
                    "--overlays", os.path.join(overlays, "overlays.toml"),
                    "--symbols", os.path.join(region_dir, "symbols.toml"), "--hook", "mh_overlay_prepare"]
     if camera_supported:
-        recomp_args.extend(["--replace", "mh_camera_orbit_update"])
+        recomp_args.extend(["--replace", "mh_camera_orbit_update",
+                             "--replace", "mh_camera_stage_update"])
     subprocess.run(recomp_args, check=True)
 
     # The host keeps the legacy digital fallback for regions that do not yet have a verified camera hook.
