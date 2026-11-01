@@ -968,9 +968,9 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
         original(runtime, context);
     }
 
-    // If native code deliberately changed the yaw after our input (for example
-    // its player-turn/auto-recenter branch), hand control back to the stock
-    // camera instead of letting the two controllers fight over subsequent frames.
+    // The native camera remains the wall/ground collision solver. Its ordinary
+    // player-turn recentering is corrected below; only true special states may
+    // release orbit control back to stock.
     const std::uint16_t native_goal_rotation = memory.load16(std_data + kStdGoalRotation);
     const std::uint16_t native_rotation = memory.load16(std_data + kStdGoalRotation + 2u);
     const std::uint8_t native_fast_rotate = memory.load8(std_data + kStdIsFastRotate);
