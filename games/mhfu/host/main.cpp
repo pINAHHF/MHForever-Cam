@@ -47,6 +47,10 @@
 #include <cstring>
 #include <exception>
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #include <process.h>
 #else
 #include <unistd.h>
@@ -68,7 +72,7 @@ bool g_log_overlays = true;
 
 // The game used to write diagnostics to its console. Keep those messages,
 // including automatic camera traces, in one file per session instead.
-void configure_automatic_logging() {
+bool configure_automatic_logging() {
     namespace fs = std::filesystem;
     fs::path data_root;
     if (const char *custom_root = std::getenv("MHF_DATA_DIR");
@@ -95,24 +99,24 @@ void configure_automatic_logging() {
     if (data_root.empty()) {
         std::error_code path_error;
         data_root = fs::temp_directory_path(path_error) / "MHForever";
-        if (path_error) return;
+        if (path_error) return false;
     }
 
     const fs::path log_directory = data_root / "logs";
     std::error_code directory_error;
     fs::create_directories(log_directory, directory_error);
-    if (directory_error) return;
+    if (directory_error) return false;
 
     const auto now = std::chrono::system_clock::now();
     const std::time_t now_time = std::chrono::system_clock::to_time_t(now);
     std::tm local_time{};
 #ifdef _WIN32
-    if (localtime_s(&local_time, &now_time) != 0) return;
+    if (localtime_s(&local_time, &now_time) != 0) return false;
 #else
-    if (localtime_r(&now_time, &local_time) == nullptr) return;
+    if (localtime_r(&now_time, &local_time) == nullptr) return false;
 #endif
     char timestamp[24]{};
-    if (std::strftime(timestamp, sizeof(timestamp), "%Y%m%d-%H%M%S", &local_time) == 0u) return;
+    if (std::strftime(timestamp, sizeof(timestamp), "%Y%m%d-%H%M%S", &local_time) == 0u) return false;
     const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
         now.time_since_epoch()).count() % 1000;
 
@@ -134,12 +138,12 @@ void configure_automatic_logging() {
     // freopen assigns the CRT streams directly to the session log.
     if (_wfreopen_s(&session_stdout, log_path.c_str(), L"ab", stdout) != 0 ||
         _wfreopen_s(&session_stderr, log_path.c_str(), L"ab", stderr) != 0) {
-        return;
+        return false;
     }
 #else
     session_stdout = std::freopen(log_path.c_str(), "ab", stdout);
     session_stderr = std::freopen(log_path.c_str(), "ab", stderr);
-    if (session_stdout == nullptr || session_stderr == nullptr) return;
+    if (session_stdout == nullptr || session_stderr == nullptr) return false;
 #endif
     std::setvbuf(session_stdout, nullptr, _IONBF, 0);
     std::setvbuf(session_stderr, nullptr, _IONBF, 0);
@@ -151,6 +155,7 @@ void configure_automatic_logging() {
 #else
     setenv("MHF_CAMERA_LOG", "1", 1);
 #endif
+    return true;
 }
 
 // Scripted input for unattended runs: "12.5:cross,15:start" presses each button for 150 ms at that time;
@@ -274,7 +279,19 @@ std::string window_title(const std::filesystem::path &disc_image) {
 } // namespace
 
 int main(int argc, char **argv) {
-    configure_automatic_logging();
+    bool log_ready = false;
+    try {
+        log_ready = configure_automatic_logging();
+    } catch (const std::exception &e) {
+        std::fprintf(stderr, "[mhfu] automatic logging setup failed: %s\\n", e.what());
+    } catch (...) {
+        std::fprintf(stderr, "[mhfu] automatic logging setup failed with an unknown error\\n");
+    }
+#ifdef _WIN32
+    // Detach only after stdout/stderr have been redirected. If log setup fails,
+    // keep the console attached so startup errors remain visible.
+    if (log_ready) FreeConsole();
+#endif
     mhf::psp::RuntimeOptions options;
     std::string exe;
     std::filesystem::path dump_folder;
