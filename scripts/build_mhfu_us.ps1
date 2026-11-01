@@ -143,28 +143,39 @@ $prepareArgs = $PythonPrefix + @(
 )
 Invoke-Checked $PythonFile $prepareArgs "Gerar código local do MHFU"
 
-$configureGameArgs = $configureArgs + @(
+$configureGameArgs = @($configureArgs | Where-Object { $_ -ne "-DMHF_BUILD_LAUNCHER=OFF" }) + @(
     "-DMHF_MHFU_GENERATED=$GeneratedDir",
-    "-DMHF_MHFU_PROGRAM_NAME=$ProgramName"
+    "-DMHF_MHFU_PROGRAM_NAME=$ProgramName",
+    "-DMHF_BUILD_LAUNCHER=ON"
 )
-Invoke-Checked $CMakeCommand.Source $configureGameArgs "Configurar executável do jogo"
-Invoke-Checked $CMakeCommand.Source @("--build", $BuildDir, "--target", "mhfu", "--parallel", "$Jobs") "Compilar $ProgramName.exe"
+Invoke-Checked $CMakeCommand.Source $configureGameArgs "Configurar launcher + jogo modificado"
+Invoke-Checked $CMakeCommand.Source @("--build", $BuildDir, "--target", "mhf_launcher", "--parallel", "$Jobs") "Compilar MHForever e integrar $ProgramName.exe"
 
 $GameExe = Join-Path $BuildDir "games\mhfu\$ProgramName.exe"
+$LauncherExe = Join-Path $BuildDir "MHForever.exe"
+$IntegratedGameExe = Join-Path $BuildDir "$ProgramName.exe"
+
 if (-not (Test-Path -LiteralPath $GameExe -PathType Leaf)) {
-    Stop-WithMessage "A compilação terminou sem criar o executável esperado: $GameExe"
+    Stop-WithMessage "A compilação terminou sem criar o executável do jogo: $GameExe"
+}
+if (-not (Test-Path -LiteralPath $LauncherExe -PathType Leaf)) {
+    Stop-WithMessage "A compilação terminou sem criar o launcher: $LauncherExe"
+}
+if (-not (Test-Path -LiteralPath $IntegratedGameExe -PathType Leaf)) {
+    Stop-WithMessage "O launcher foi compilado, mas o jogo não foi copiado para a pasta dele: $IntegratedGameExe"
 }
 
 Write-Host ""
-Write-Host "SUCESSO: $GameExe" -ForegroundColor Green
-Write-Host "Para testar, use:"
-Write-Host ('  & "{0}" --iso "{1}" --exe "{2}" --window' -f $GameExe, $Iso, $Exe)
+Write-Host "SUCESSO: launcher e câmera integrados." -ForegroundColor Green
+Write-Host "Launcher: $LauncherExe"
+Write-Host "Jogo modificado: $IntegratedGameExe"
+Write-Host "Abra MHForever.exe e use o botão Play. Save, configurações e texturas continuam no diretório normal do MHForever."
 
 if ($Launch) {
     Write-Host ""
-    Write-Host "Iniciando o MHFU modificado..." -ForegroundColor Cyan
-    & $GameExe --iso $Iso --exe $Exe --window
+    Write-Host "Iniciando o launcher integrado..." -ForegroundColor Cyan
+    & $LauncherExe
     if ($LASTEXITCODE -ne 0) {
-        Write-Host ("O jogo fechou com código {0}." -f $LASTEXITCODE) -ForegroundColor Yellow
+        Write-Host ("O launcher fechou com código {0}." -f $LASTEXITCODE) -ForegroundColor Yellow
     }
 }
