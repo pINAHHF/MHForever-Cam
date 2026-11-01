@@ -73,14 +73,6 @@ constexpr std::uint32_t kQuestMissionFlagMask =
     (1u << 21u) | (1u << 22u) | (1u << 23u) | (1u << 24u) | (1u << 25u) |
     (1u << 26u) | (1u << 29u) | (1u << 30u);
 
-// EU reference slots from the public MHP2G symbol map. The US +0x120
-// translations are being checked against live memory because three of them
-// currently read as null in the user's ULUS10391 runtime.
-constexpr std::uint32_t kEuGameSysSingleton = 0x089C7508u;
-constexpr std::uint32_t kEuGameTaskSingleton = 0x09A40998u;
-constexpr std::uint32_t kEuTaskManagerSingleton = 0x08A862B8u;
-constexpr std::uint32_t kEuSystemSingleton = 0x08A5E270u;
-
 constexpr std::uint32_t kStdIsFalldown = 0x35u;
 constexpr std::uint32_t kStdIsViewBlocked = 0x89u;
 constexpr std::uint32_t kStdKabegiwaTimer = 0x8Bu;
@@ -1071,7 +1063,7 @@ void replace_stage_camera(Runtime &runtime, Context &context, GuestFunction orig
         return;
     }
 
-    if (!is_hunt_camera_context(memory)) {
+    if (!is_hunt_camera_context(memory, camera)) {
         restore_standard_camera_profile(memory);
         restore_offset_pan_profile(memory);
         g_orbit = {};
