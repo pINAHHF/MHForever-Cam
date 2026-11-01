@@ -639,6 +639,27 @@ void replace_offset_pan_camera(Runtime &runtime, Context &context, GuestFunction
     memory.store16(stg_data + 0x5Au, angle_to_units(g_orbit.yaw)); // rotation
 
     g_orbit.last_update_us = now;
+    if (camera_trace_enabled()) {
+        static std::uint64_t last_input_trace_us = 0u;
+        if (last_input_trace_us == 0u || now < last_input_trace_us ||
+            now - last_input_trace_us >= 500'000u) {
+            std::fprintf(stderr,
+                "[mhfu-camera] OFFSET_PAN input area=0x%08X sub=(active=%u mode=%u state=%u) "
+                "rx=%+.3f ry=%+.3f shaped=(%+.3f,%+.3f) yaw=%.3f elevation=%.3f "
+                "player=(%.1f,%.1f,%.1f) target=(%.1f,%.1f,%.1f) pan=(%.1f,%.1f,%.1f)\\n",
+                static_cast<unsigned>(area),
+                static_cast<unsigned>(memory.load8(stg_sub_camera + kSubCameraIsActive)),
+                static_cast<unsigned>(memory.load8(stg_sub_camera + 0x98u)),
+                static_cast<unsigned>(memory.load8(stg_sub_camera + kSubCameraState)),
+                static_cast<double>(pad.rx), static_cast<double>(pad.ry),
+                static_cast<double>(dx), static_cast<double>(dy),
+                static_cast<double>(g_orbit.yaw), static_cast<double>(g_orbit.elevation),
+                static_cast<double>(player_x), static_cast<double>(player_y), static_cast<double>(player_z),
+                static_cast<double>(target_x), static_cast<double>(target_y), static_cast<double>(target_z),
+                static_cast<double>(pan_x), static_cast<double>(pan_y), static_cast<double>(pan_z));
+            last_input_trace_us = now;
+        }
+    }
     camera_trace("orbit active: OFFSET_PAN right-stick camera path accepted");
     runtime.note_analog_camera_update(now);
 
@@ -765,6 +786,20 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
     }
 
     g_orbit.last_update_us = now;
+    if (camera_trace_enabled()) {
+        static std::uint64_t last_input_trace_us = 0u;
+        if (last_input_trace_us == 0u || now < last_input_trace_us ||
+            now - last_input_trace_us >= 500'000u) {
+            std::fprintf(stderr,
+                "[mhfu-camera] STD input area_sub=%u move_type=%u rx=%+.3f ry=%+.3f "
+                "shaped=(%+.3f,%+.3f) yaw=%.3f elevation=%.3f\\n",
+                static_cast<unsigned>(area_sub_id), static_cast<unsigned>(move_type),
+                static_cast<double>(pad.rx), static_cast<double>(pad.ry),
+                static_cast<double>(dx), static_cast<double>(dy),
+                static_cast<double>(g_orbit.yaw), static_cast<double>(g_orbit.elevation));
+            last_input_trace_us = now;
+        }
+    }
 
     // The native camera routine is retained as the wall/ground/safety solver.
     // D-pad stage changes are masked for this call. We temporarily rewrite only
