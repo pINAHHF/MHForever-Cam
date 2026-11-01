@@ -646,7 +646,7 @@ void replace_offset_pan_camera(Runtime &runtime, Context &context, GuestFunction
             std::fprintf(stderr,
                 "[mhfu-camera] OFFSET_PAN input area=0x%08X sub=(active=%u mode=%u state=%u) "
                 "rx=%+.3f ry=%+.3f shaped=(%+.3f,%+.3f) yaw=%.3f elevation=%.3f "
-                "player=(%.1f,%.1f,%.1f) target=(%.1f,%.1f,%.1f) pan=(%.1f,%.1f,%.1f)\\n",
+                "player=(%.1f,%.1f,%.1f) target=(%.1f,%.1f,%.1f) pan=(%.1f,%.1f,%.1f)\n",
                 static_cast<unsigned>(area),
                 static_cast<unsigned>(memory.load8(stg_sub_camera + kSubCameraIsActive)),
                 static_cast<unsigned>(memory.load8(stg_sub_camera + 0x98u)),
@@ -792,7 +792,7 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
             now - last_input_trace_us >= 500'000u) {
             std::fprintf(stderr,
                 "[mhfu-camera] STD input area_sub=%u move_type=%u rx=%+.3f ry=%+.3f "
-                "shaped=(%+.3f,%+.3f) yaw=%.3f elevation=%.3f\\n",
+                "shaped=(%+.3f,%+.3f) yaw=%.3f elevation=%.3f\n",
                 static_cast<unsigned>(area_sub_id), static_cast<unsigned>(move_type),
                 static_cast<double>(pad.rx), static_cast<double>(pad.ry),
                 static_cast<double>(dx), static_cast<double>(dy),
