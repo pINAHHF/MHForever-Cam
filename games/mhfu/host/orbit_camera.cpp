@@ -1031,6 +1031,94 @@ void update_standard_orbit_before_native(Runtime &runtime, std::uint32_t camera)
     camera_trace("orbit active: STD pre-native right-stick camera path accepted");
 }
 
+
+void apply_standard_orbit_pitch_after_native(Runtime &runtime, std::uint32_t camera) {
+    auto &memory = runtime.memory();
+    if (!g_orbit.active || g_orbit.mode != kOrbitModeStandard ||
+        g_orbit.camera != camera) {
+        return;
+    }
+
+    const std::uint32_t sub_camera = camera + kCameraFromSubCamera;
+    const std::uint32_t std_data = sub_camera + kSubCameraData;
+    if (g_orbit.sub_camera != sub_camera ||
+        !range_ok(memory, sub_camera, 0u, 0x1Cu) ||
+        !range_ok(memory, std_data, kStdIsFalldown, 1u) ||
+        !range_ok(memory, std_data, kStdKabegiwaTimer, 1u)) {
+        return;
+    }
+
+    // Never rotate the resolved view while the native camera reports a
+    // fall, blocked-view, wall-climb or wall-climb timer state. In those
+    // cases the original collision/scripted camera keeps full ownership.
+    const bool collision_constrained =
+        memory.load8(std_data + kStdIsFalldown) != 0u ||
+        memory.load8(std_data + kStdIsViewBlocked) != 0u ||
+        memory.load8(std_data + kStdIsKabegiwa) != 0u ||
+        memory.load8(std_data + kStdKabegiwaTimer) != 0u;
+    if (collision_constrained) return;
+
+    const float position_x = load_float(memory, sub_camera + 0x00u);
+    const float position_y = load_float(memory, sub_camera + 0x04u);
+    const float position_z = load_float(memory, sub_camera + 0x08u);
+    const float target_x = load_float(memory, sub_camera + 0x10u);
+    const float target_y = load_float(memory, sub_camera + 0x14u);
+    const float target_z = load_float(memory, sub_camera + 0x18u);
+
+    const float offset_x = position_x - target_x;
+    const float offset_y = position_y - target_y;
+    const float offset_z = position_z - target_z;
+    const float horizontal = std::hypot(offset_x, offset_z);
+    const float distance = std::sqrt(
+        offset_x * offset_x + offset_y * offset_y + offset_z * offset_z);
+    if (!std::isfinite(position_x) || !std::isfinite(position_y) ||
+        !std::isfinite(position_z) || !std::isfinite(target_x) ||
+        !std::isfinite(target_y) || !std::isfinite(target_z) ||
+        !std::isfinite(horizontal) || !std::isfinite(distance) ||
+        horizontal < 0.01f || distance < 1.0f) {
+        return;
+    }
+
+    // The native STD routine eases its vertical camera vector toward the
+    // follow-height profile. Correct only its resolved pitch here, after the
+    // native update, while preserving its collision-adjusted radius and yaw.
+    const float desired_elevation =
+        std::clamp(g_orbit.elevation, kMinElevation, kMaxElevation);
+    const float desired_horizontal = std::cos(desired_elevation) * distance;
+    const float desired_vertical = std::sin(desired_elevation) * distance;
+    const float horizontal_scale = desired_horizontal / horizontal;
+    if (!std::isfinite(horizontal_scale) || !std::isfinite(desired_vertical)) return;
+
+    const float corrected_x = target_x + offset_x * horizontal_scale;
+    const float corrected_y = target_y + desired_vertical;
+    const float corrected_z = target_z + offset_z * horizontal_scale;
+    if (!std::isfinite(corrected_x) || !std::isfinite(corrected_y) ||
+        !std::isfinite(corrected_z)) {
+        return;
+    }
+
+    store_float(memory, sub_camera + 0x00u, corrected_x);
+    store_float(memory, sub_camera + 0x04u, corrected_y);
+    store_float(memory, sub_camera + 0x08u, corrected_z);
+
+    if (camera_trace_enabled()) {
+        static std::uint64_t last_pitch_trace_us = 0u;
+        const std::uint64_t now = runtime.now_us();
+        if (last_pitch_trace_us == 0u || now < last_pitch_trace_us ||
+            now - last_pitch_trace_us >= 500'000u) {
+            const float before_elevation = std::atan2(offset_y, horizontal);
+            std::fprintf(stderr,
+                "[mhfu-camera] STD-post-native pitch desired=%.3f before=%.3f "
+                "after=%.3f resolved_distance=%.1f\n",
+                static_cast<double>(desired_elevation),
+                static_cast<double>(before_elevation),
+                static_cast<double>(std::atan2(desired_vertical, desired_horizontal)),
+                static_cast<double>(distance));
+            last_pitch_trace_us = now;
+        }
+    }
+}
+
 void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction original) {
     camera_trace("replacement reached: mh_camera_orbit_update");
     auto &memory = runtime.memory();
@@ -1246,6 +1334,10 @@ void replace_stage_camera(Runtime &runtime, Context &context, GuestFunction orig
         }
 
         if (original != nullptr) original(runtime, context);
+        if (area_sub_id == 0u && g_orbit.active &&
+            g_orbit.mode == kOrbitModeStandard) {
+            apply_standard_orbit_pitch_after_native(runtime, camera);
+        }
         if (area_sub_id != 0u && g_orbit.active &&
             g_orbit.mode == kOrbitModeStandard) {
             restore_standard_camera_profile(memory);
