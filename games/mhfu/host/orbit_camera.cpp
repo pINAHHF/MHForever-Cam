@@ -1044,6 +1044,8 @@ void apply_standard_orbit_pitch_after_native(Runtime &runtime, std::uint32_t cam
     if (g_orbit.sub_camera != sub_camera ||
         !range_ok(memory, sub_camera, 0u, 0x1Cu) ||
         !range_ok(memory, std_data, kStdIsFalldown, 1u) ||
+        !range_ok(memory, std_data, kStdIsViewBlocked, 1u) ||
+        !range_ok(memory, std_data, kStdIsKabegiwa, 1u) ||
         !range_ok(memory, std_data, kStdKabegiwaTimer, 1u)) {
         return;
     }
