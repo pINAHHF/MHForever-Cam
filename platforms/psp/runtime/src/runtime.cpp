@@ -149,6 +149,15 @@ HookFunction Runtime::find_hook(std::string_view name) const {
     return it != hooks_.end() ? it->second : nullptr;
 }
 
+void Runtime::register_replacement(std::string name, ReplacementFunction function) {
+    replacements_[std::move(name)] = function;
+}
+
+ReplacementFunction Runtime::find_replacement(std::string_view name) const {
+    const auto it = replacements_.find(std::string(name));
+    return it != replacements_.end() ? it->second : nullptr;
+}
+
 const HleFunction *Runtime::find_hle(std::string_view library, std::uint32_t nid) const {
     const auto it = hle_.find(hle_key(library, nid));
     return it != hle_.end() ? it->second : nullptr;
@@ -379,6 +388,7 @@ void unsupported(Runtime &rt, std::uint32_t pc, std::uint32_t word, const char *
 }
 void arithmetic_overflow(Runtime &rt, std::uint32_t pc, std::uint32_t word) { rt.arithmetic_overflow(pc, word); }
 HookFunction find_hook(Runtime &rt, const char *name) { return rt.find_hook(name); }
+ReplacementFunction find_replacement(Runtime &rt, const char *name) { return rt.find_replacement(name); }
 void call_import(Runtime &rt, Context &ctx, ImportEntry &import) { mhf::psp::call_import(rt, ctx, import); }
 
 std::atomic<bool> interrupt_pending{false};

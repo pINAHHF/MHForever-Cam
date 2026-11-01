@@ -95,6 +95,9 @@ struct RuntimeOptions {
     // System dialogs (messages, keyboard, save/load) wait for the player and are drawn by the frontend. Off for
     // headless runs and tests, where they answer at once (yes / the default text / the game's own slot).
     bool interactive_dialogs = false;
+    // Whether the selected game build has a native analog right-stick camera hook; otherwise the frontend keeps the
+    // legacy right-stick-to-D-pad mapping.
+    bool analog_camera_input = false;
     // Player volume preferences, 0..100 (100 = as the game mixes it): music is decoded ATRAC audio, effects the voice
     // mixer (sceSasCore).
     int music_volume = 100;
@@ -125,6 +128,8 @@ public:
     // Hooks called by generated code on entry to selected guest functions.
     void register_hook(std::string name, HookFunction function);
     [[nodiscard]] HookFunction find_hook(std::string_view name) const;
+    void register_replacement(std::string name, ReplacementFunction function);
+    [[nodiscard]] ReplacementFunction find_replacement(std::string_view name) const;
     void add_hle(std::span<const HleFunction> functions);
     [[nodiscard]] const HleFunction *find_hle(std::string_view library, std::uint32_t nid) const;
 
@@ -195,6 +200,16 @@ public:
         last_import_.store(name, std::memory_order_relaxed);
         imports_.fetch_add(1, std::memory_order_relaxed);
     }
+    // The camera-input hook runs only while the hunt orbit camera is active. The frontend
+    // uses this short-lived signal to retain the digital fallback in the village.
+    void note_analog_camera_update(std::uint64_t timestamp_us) noexcept {
+        camera_hook_update_us_.store(timestamp_us, std::memory_order_relaxed);
+    }
+    [[nodiscard]] bool analog_camera_active() const {
+        const std::uint64_t last = camera_hook_update_us_.load(std::memory_order_relaxed);
+        const std::uint64_t now = now_us();
+        return last != 0 && now >= last && now - last < 250'000u;
+    }
 
 private:
     RuntimeOptions options_;
@@ -203,6 +218,7 @@ private:
     std::thread ticker_;                 // raises abi::interrupt_pending every few milliseconds
     std::atomic<bool> ticker_stop_{false};
     std::atomic<std::uint64_t> frames_{0};
+    std::atomic<std::uint64_t> camera_hook_update_us_{0};
     std::atomic<std::uint64_t> imports_{0};
     std::atomic<const char *> last_import_{nullptr};
     std::vector<FunctionEntry> functions_; // sorted by address (main modules)
@@ -216,6 +232,7 @@ private:
     std::vector<OverlayRegion> overlay_regions_;
     std::unordered_map<std::int32_t, const Program *> overlays_;
     std::unordered_map<std::string, HookFunction> hooks_;
+    std::unordered_map<std::string, ReplacementFunction> replacements_;
     std::unordered_map<std::uint64_t, const HleFunction *> hle_;
     std::unordered_map<std::uint64_t, bool> reported_unimplemented_;
     std::uint64_t overlay_activations_{};

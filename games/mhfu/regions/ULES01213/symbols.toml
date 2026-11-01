@@ -4,6 +4,8 @@
 
 [functions]
 mh_main                 = 0x08906934 # module entry point
+mh_camera_orbit_update  = 0x08886B68 # quest sub-camera orbit update; seeds the function containing the input site
+mh_camera_stage_update  = 0x0888889C # SubCamera::cam_sub_stg (STG/OFFSET_PAN camera update)
 
 # Overlay manager (docs/04-recompiler.md §4.4). Groups: 0 eboot, 1 task, 2 sub, 3 em, 4 stage, 5 debug.
 mh_overlay_request      = 0x08890144 # (System*, file_id, group): starts an async read of DATA.BIN file `file_id` into the group's region
@@ -12,8 +14,12 @@ mh_overlay_is_active    = 0x08890284 # (System*, group, file_id) -> bool
 mh_overlay_prepare      = 0x0890DD9C # (image*, size): cache maintenance, clears .bss after the image, runs its static initializers
 mh_static_init_run      = 0x0890C2FC # (begin, end, ...): runs a static-initializer table (used for overlays and the executable)
 
+[hook_sites]
+mh_camera_orbit_inputs  = 0x088878BC # angles are prepared; apply analog delta before orbit transform/collision
+
 [data]
 mh_overlay_region_bases = 0x089CBA70 # u32[6], region base address per group
+mh_game_sys_singleton    = 0x089C7508 # Candidate MHP2G GameSys singleton slot for the EU layout; runtime validates the object and falls back if invalid.
 
 [offsets]
 system_active_overlays  = 0x00F7A580 # u16[6] inside System, active DATA.BIN file id per group (0xFFFF = none)

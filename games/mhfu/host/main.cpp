@@ -11,6 +11,7 @@
 // (launcher/native/install/); developer builds can also point --exe at a file that matches region.toml's dev_executable.
 
 #include "mhf/psp/frame_dump.hpp"
+#include "orbit_camera.hpp"
 #include "mhf/psp/generated.hpp"
 #include "mhf/psp/host.hpp"
 #include "mhf/psp/runtime.hpp"
@@ -20,11 +21,24 @@
 #include "host/keymap.hpp"
 #include "host/padmap.hpp"
 
+#if __has_include("mhfu_camera_support.hpp")
+#include "mhfu_camera_support.hpp"
+#else
+#define MHF_MHFU_HAS_ANALOG_CAMERA 0
+#endif
+
 #include <algorithm>
+#include <bit>
+#include <cmath>
 #include <array>
+#include <chrono>
 #include <cstdio>
+#include <ctime>
 #include <filesystem>
 #include <functional>
+#include <iomanip>
+#include <sstream>
+#include <system_error>
 
 #if defined(MHF_HAS_FRONTEND)
 #include "psp_frontend.hpp"
@@ -32,6 +46,15 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 #include <string>
 #include <utility>
 #include <vector>
@@ -46,6 +69,94 @@ using mhf::psp::Context;
 using mhf::psp::Runtime;
 
 bool g_log_overlays = true;
+
+// The game used to write diagnostics to its console. Keep those messages,
+// including automatic camera traces, in one file per session instead.
+bool configure_automatic_logging() {
+    namespace fs = std::filesystem;
+    fs::path data_root;
+    if (const char *custom_root = std::getenv("MHF_DATA_DIR");
+        custom_root != nullptr && *custom_root != '\0') {
+        data_root = fs::path(custom_root);
+    }
+#ifdef _WIN32
+    else if (const char *app_data = std::getenv("APPDATA");
+             app_data != nullptr && *app_data != '\0') {
+        data_root = fs::path(app_data) / "MHForever";
+    } else if (const char *local_app_data = std::getenv("LOCALAPPDATA");
+               local_app_data != nullptr && *local_app_data != '\0') {
+        data_root = fs::path(local_app_data) / "MHForever";
+    }
+#else
+    else if (const char *xdg_data = std::getenv("XDG_DATA_HOME");
+             xdg_data != nullptr && *xdg_data != '\0') {
+        data_root = fs::path(xdg_data) / "MHForever";
+    } else if (const char *home = std::getenv("HOME");
+               home != nullptr && *home != '\0') {
+        data_root = fs::path(home) / ".local" / "share" / "MHForever";
+    }
+#endif
+    if (data_root.empty()) {
+        std::error_code path_error;
+        data_root = fs::temp_directory_path(path_error) / "MHForever";
+        if (path_error) return false;
+    }
+
+    const fs::path log_directory = data_root / "logs";
+    std::error_code directory_error;
+    fs::create_directories(log_directory, directory_error);
+    if (directory_error) return false;
+
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t now_time = std::chrono::system_clock::to_time_t(now);
+    std::tm local_time{};
+#ifdef _WIN32
+    if (localtime_s(&local_time, &now_time) != 0) return false;
+#else
+    if (localtime_r(&now_time, &local_time) == nullptr) return false;
+#endif
+    char timestamp[24]{};
+    if (std::strftime(timestamp, sizeof(timestamp), "%Y%m%d-%H%M%S", &local_time) == 0u) return false;
+    const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()).count() % 1000;
+
+#ifdef _WIN32
+    const int process_id = _getpid();
+#else
+    const int process_id = static_cast<int>(getpid());
+#endif
+    std::ostringstream filename;
+    filename << "mhfu-" << timestamp << '-'
+             << std::setw(3) << std::setfill('0') << milliseconds
+             << '-' << process_id << ".log";
+    const fs::path log_path = log_directory / filename.str();
+
+    static std::FILE *session_stdout = nullptr;
+    static std::FILE *session_stderr = nullptr;
+#ifdef _WIN32
+    // Redirect the normal CRT streams before detaching from the console.
+    // If either redirection fails, keep the console attached for diagnostics.
+    if (_wfreopen_s(&session_stdout, log_path.c_str(), L"ab", stdout) != 0 ||
+        _wfreopen_s(&session_stderr, log_path.c_str(), L"ab", stderr) != 0) {
+        return false;
+    }
+#else
+    session_stdout = std::freopen(log_path.c_str(), "ab", stdout);
+    session_stderr = std::freopen(log_path.c_str(), "ab", stderr);
+    if (session_stdout == nullptr || session_stderr == nullptr) return false;
+#endif
+    std::setvbuf(session_stdout, nullptr, _IONBF, 0);
+    std::setvbuf(session_stderr, nullptr, _IONBF, 0);
+    std::fprintf(stderr, "[mhfu] automatic session log enabled\n");
+
+    // camera_trace_enabled() reads this flag once, on its first use.
+#ifdef _WIN32
+    _putenv_s("MHF_CAMERA_LOG", "1");
+#else
+    setenv("MHF_CAMERA_LOG", "1", 1);
+#endif
+    return true;
+}
 
 // Scripted input for unattended runs: "12.5:cross,15:start" presses each button for 150 ms at that time;
 // "20:sup/3" holds the analog stick up (sup, sdown, sleft, sright) or a button for 3 seconds.
@@ -168,6 +279,19 @@ std::string window_title(const std::filesystem::path &disc_image) {
 } // namespace
 
 int main(int argc, char **argv) {
+    bool log_ready = false;
+    try {
+        log_ready = configure_automatic_logging();
+    } catch (const std::exception &e) {
+        std::fprintf(stderr, "[mhfu] automatic logging setup failed: %s\n", e.what());
+    } catch (...) {
+        std::fprintf(stderr, "[mhfu] automatic logging setup failed with an unknown error\n");
+    }
+#ifdef _WIN32
+    // Detach only after stdout/stderr have been redirected. If log setup fails,
+    // keep the console attached so startup errors remain visible.
+    if (log_ready) FreeConsole();
+#endif
     mhf::psp::RuntimeOptions options;
     std::string exe;
     std::filesystem::path dump_folder;
@@ -241,6 +365,7 @@ int main(int argc, char **argv) {
         if (const char *server = std::getenv("MHF_ADHOC_SERVER")) options.adhoc_server = server; // until the launcher sets it
     }
     options.adhoc_nickname = adhoc_nick.empty() ? options.osk_default_text : adhoc_nick;
+    options.analog_camera_input = MHF_MHFU_HAS_ANALOG_CAMERA != 0;
     if (!options.adhoc_server.empty()) options.adhoc_product_code = disc_product_code(options.disc_image);
     // The halls' names start with these (docs/14-rooms-and-friends.md section 1): Freedom Unite's two modes, and the
     // Japanese release's "集会所" in Shift-JIS. Any other prefix the game uses is learnt when it joins a hall.
@@ -253,6 +378,7 @@ int main(int argc, char **argv) {
             runtime.add_overlay(*programs[i]);
         }
         runtime.register_hook("mh_overlay_prepare", &on_overlay_prepare);
+        register_mhfu_orbit_camera(runtime);
         std::function<void()> extra;
         if (!dump_folder.empty() || seconds > 0 || !script.empty()) {
             if (!dump_folder.empty()) std::filesystem::create_directories(dump_folder);

@@ -62,7 +62,11 @@ public:
         : input_(input), analysis_(analysis), function_(function) {}
 
     std::string write() {
-        out_ << "void " << fn_name(function_.entry) << "(Runtime &rt, Context &ctx) {\n"
+        const auto replacement = input_.replacements.find(function_.entry);
+        const bool has_replacement = replacement != input_.replacements.end();
+        const std::string function_name = fn_name(function_.entry);
+        out_ << "void " << function_name << (has_replacement ? "_original" : "")
+             << "(Runtime &rt, Context &ctx) {\n"
              << "    psprecomp::GuestMemory &mem = abi::memory(rt);\n"
              << "    std::uint32_t jump_target = 0u;\n"
              << "    (void)mem; (void)jump_target;\n";
@@ -86,6 +90,15 @@ public:
             out_ << "    default: break;\n    }\n";
         }
         out_ << "    return;\n}\n\n";
+        if (has_replacement) {
+            out_ << "void " << function_name << "(Runtime &rt, Context &ctx) {\n"
+                 << "    static const auto replacement = abi::find_replacement(rt, \""
+                 << cpp_escape(replacement->second) << "\");\n"
+                 << "    if (replacement != nullptr) { replacement(rt, ctx, &" << function_name
+                 << "_original); return; }\n"
+                 << "    " << function_name << "_original(rt, ctx);\n"
+                 << "}\n\n";
+        }
         return out_.str();
     }
 
@@ -139,6 +152,10 @@ private:
                 out_ << "    abi::jump(rt, ctx, " << hex32(pc) << "u); return;\n";
                 return;
             }
+            if (const auto hook = input_.pc_hooks.find(pc); hook != input_.pc_hooks.end()) {
+                out_ << "    { static const HookFunction hook = abi::find_hook(rt, \"" << cpp_escape(hook->second) << "\");\n"
+                     << "      if (hook != nullptr) hook(rt, ctx); }\n";
+            }
             const auto d = decode(pc);
             if (!d.has_delay_slot() && d.kind != OpcodeKind::Jr && d.kind != OpcodeKind::Jalr) {
                 out_ << emit_instruction(d, pc);
@@ -156,6 +173,9 @@ private:
 
     void write_control_transfer(const DecodedInstruction &d, std::uint32_t pc) {
         transfer_pc_ = pc;
+        if (input_.pc_hooks.contains(pc + 4u)) {
+            throw std::logic_error("PC hook cannot be placed in a branch delay slot at " + hex32(pc + 4u));
+        }
         const auto slot = decode(pc + 4u);
         instruction_count_ += 2;
         if (slot.is_control_flow() || slot.kind == OpcodeKind::Jr || slot.kind == OpcodeKind::Jalr) {

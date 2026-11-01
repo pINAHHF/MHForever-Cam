@@ -44,6 +44,8 @@ struct ControllerState {
     std::uint32_t buttons{};
     std::uint8_t lx{128};
     std::uint8_t ly{128};
+    float rx{}; // right stick, -1..1 (host camera input)
+    float ry{};
 };
 
 [[nodiscard]] const DisplayState &display_state(Runtime &rt);

@@ -178,9 +178,9 @@ mode, where no second window can be shown.
   - Face buttons: △/Y, ○/B, ×/A, □/X by physical position (option to swap confirm/cancel per region).
   - L/R → LB/RB (LT/RT configurable too).
   - START, SELECT → Menu/View.
-  - **Right stick → D-pad** (FU's "claw" camera) with configurable deadzone and repeat. Level 1 is implemented; level 2 (analog camera hook) is an enhancement.
+  - **Right stick → D-pad** remains the fallback outside the hunt orbit-camera update and for builds without a verified hook. On MHFU EU (ULES01213) and US (ULUS10391), the right stick controls the hunt camera continuously; the village keeps the original D-pad-style camera behavior.
 - Keyboard: every button of the pad answers to a physical key, and the player changes them in the launcher
-  (**Game settings → Controls**), not by editing a file; the mouse drives the camera once the analog hook exists.
+  (**Game settings → Controls**), not by editing a file. Mouse camera control is still a separate enhancement.
   - A binding is a UI Events code (`KeyK`, `ArrowLeft`, `Space`...): it names the key's position, not the character
     printed on it, so WASD stays where a player expects it on AZERTY or QWERTZ.
   - The bindings live in `launcher.json` under `settings.keys` (16 actions) and the launcher passes them to the game with
@@ -198,7 +198,7 @@ mode, where no second window can be shown.
     `--padmap "south=south,left_shoulder=left_shoulder+left_trigger,...,stick=left"`; `core/host/padmap*` resolves it.
     In the launcher the controller's own navigation pauses while a button is recorded; Backspace or Delete removes a source,
     Esc cancels, and a source already in use is swapped. The Guide button is never offered (it opens the in-game menu).
-  - Per-controller profiles, deadzones, sensitivity and an analog camera are pending; rumble optional (the PSP has none).
+  - Per-controller profiles and configurable camera deadzone/sensitivity are pending; analog hunt-camera control is implemented for the verified EU/US MHFU builds. L keeps the game's native camera recentering behavior. Rumble is optional (the PSP has none).
 - In the game: the in-game menu has a **Controls** tab with the same bindings. Pick a row, press the new key or button and it
   applies at once; Esc or a click cancels, Backspace unbinds, F11 stays reserved. The host reports the next key or button by
   name while the menu waits for one (`SdlHost::set_capture`). The game writes every change to the file the launcher gave it

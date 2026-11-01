@@ -23,6 +23,8 @@ using GuestFunction = void (*)(Runtime &, Context &);
 using HleHandler = void (*)(Runtime &, Context &);
 // Host code run on entry to a hooked guest function (the guest function then runs normally).
 using HookFunction = void (*)(Runtime &, Context &);
+// Host replacement for a guest function. The original translated body is supplied for special-mode fallback.
+using ReplacementFunction = void (*)(Runtime &, Context &, GuestFunction original);
 
 struct HleFunction {
     const char *library;
@@ -65,6 +67,7 @@ void jump(Runtime &rt, Context &ctx, std::uint32_t address);   // indirect tail 
 [[noreturn]] void unsupported(Runtime &rt, std::uint32_t pc, std::uint32_t word, const char *reason);
 [[noreturn]] void arithmetic_overflow(Runtime &rt, std::uint32_t pc, std::uint32_t word);
 [[nodiscard]] HookFunction find_hook(Runtime &rt, const char *name);
+[[nodiscard]] ReplacementFunction find_replacement(Runtime &rt, const char *name);
 void call_import(Runtime &rt, Context &ctx, ImportEntry &import);
 
 // Set (from any host thread) when an interrupt may be due: the vblank ticker, a finished display list. Generated code
