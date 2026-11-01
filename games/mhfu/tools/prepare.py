@@ -118,6 +118,9 @@ def main():
 
     camera_supported = a.region in ("ULES01213", "ULUS10391")
     game_sys_singleton = region_symbol(region_dir, "data", "mh_game_sys_singleton") if camera_supported else 0
+    game_task_singleton = region_symbol(region_dir, "data", "mh_game_task_singleton") if camera_supported else 0
+    task_manager_singleton = region_symbol(region_dir, "data", "mh_task_manager_singleton") if camera_supported else 0
+    system_singleton = region_symbol(region_dir, "data", "mh_system_singleton") if camera_supported else 0
     recomp_args = [tool(a.tools, "mhf_recomp"), "--elf", a.exe, "--out", generated, "--name", "mhfu", "--parts", a.parts,
                    "--overlays", os.path.join(overlays, "overlays.toml"),
                    "--symbols", os.path.join(region_dir, "symbols.toml"), "--hook", "mh_overlay_prepare"]
@@ -132,6 +135,9 @@ def main():
         header.write("#pragma once\n")
         header.write(f"#define MHF_MHFU_HAS_ANALOG_CAMERA {1 if camera_supported else 0}\n")
         header.write(f"#define MHF_MHFU_GAME_SYS_SINGLETON 0x{game_sys_singleton:08X}u\n")
+        header.write(f"#define MHF_MHFU_GAME_TASK_SINGLETON 0x{game_task_singleton:08X}u\n")
+        header.write(f"#define MHF_MHFU_TASK_MANAGER_SINGLETON 0x{task_manager_singleton:08X}u\n")
+        header.write(f"#define MHF_MHFU_SYSTEM_SINGLETON 0x{system_singleton:08X}u\n")
     print(f"\nGenerated code: {generated}\nConfigure with: cmake --preset <preset> -DMHF_MHFU_GENERATED={generated}")
 
 
