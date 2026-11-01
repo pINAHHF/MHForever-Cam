@@ -1143,15 +1143,14 @@ void apply_standard_orbit_pitch_after_native(Runtime &runtime, std::uint32_t cam
         return;
     }
 
-    // Keep the native collision-safe position untouched while a wall/fall/
-    // blocked-view contact is active, but adopt its resolved orbit angles.
-    // Without this sync, g_orbit keeps the pre-contact angles and snaps back
-    // to that stale orbit on the first frame after the native flag clears.
+    // Let the native solver keep its collision-safe camera position, but
+    // never import its collision-driven direction into the player's orbit.
+    // In particular, is_view_blocked may rotate the native view back toward
+    // the hunter; adopting that temporary direction here destroys the
+    // right-stick trajectory and makes the camera snap behind the character.
+    // Keep the user's yaw/elevation so the requested orbit resumes as soon as
+    // the obstruction clears. Floor handling below remains independent.
     if (collision_constrained) {
-        g_orbit.yaw = wrap_angle(std::atan2(-offset_x, -offset_z));
-        g_orbit.elevation = std::clamp(
-            std::atan2(offset_y, horizontal), kMinElevation, kMaxElevation);
-        g_orbit.last_update_us = runtime.now_us();
         return;
     }
 
