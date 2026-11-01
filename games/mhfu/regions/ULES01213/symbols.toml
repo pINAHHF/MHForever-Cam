@@ -20,6 +20,7 @@ mh_camera_orbit_inputs  = 0x088878BC # angles are prepared; apply analog delta b
 [data]
 mh_overlay_region_bases = 0x089CBA70 # u32[6], region base address per group
 mh_game_sys_singleton    = 0x089C7508 # GameSys::objectPtr.
+mh_quest_singleton       = 0x08A5DD4C # Quest::objectPtr; candidate from the matching 2nd G symbol map.
 mh_game_task_singleton   = 0x09A40998 # GameTask::objectPtr.
 mh_task_manager_singleton = 0x08A862B8 # TaskManager::objectPtr.
 mh_system_singleton      = 0x08A5E270 # System::objectPtr.
