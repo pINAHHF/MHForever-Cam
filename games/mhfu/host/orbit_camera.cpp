@@ -83,6 +83,9 @@ constexpr std::uint32_t kFollowHeightYOffset = 0x04u;
 constexpr std::uint32_t kFollowHeightZOffset = 0x08u;
 constexpr std::uint32_t kFollowHeightHeight = 0x10u;
 
+// Used only to validate the player structure; R1 no longer drives camera recentering.
+constexpr std::uint32_t kPlayerRotationY = 0x1F4u;
+
 constexpr std::uint32_t kPlayerPosture = 0x280u;
 constexpr std::uint32_t kPlayerActionType = 0x294u;
 constexpr std::uint32_t kPlayerActionId = 0x295u;
