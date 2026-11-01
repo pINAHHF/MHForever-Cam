@@ -23,6 +23,7 @@ mh_camera_orbit_inputs  = 0x088878BC # matches the EU camera input site
 [data]
 mh_overlay_region_bases = 0x089CBB90 # u32[6], region base address per group
 mh_game_sys_singleton    = 0x089C7628 # GameSys::objectPtr; EU symbol +0x120 in this US executable.
+mh_quest_singleton       = 0x08A5DE6C # Quest::objectPtr; candidate from the matching 2nd G symbol map +0x120.
 mh_game_task_singleton   = 0x09A40AB8 # GameTask::objectPtr; EU symbol +0x120 in this US executable.
 mh_task_manager_singleton = 0x08A863D8 # TaskManager::objectPtr; EU symbol +0x120 in this US executable.
 mh_system_singleton      = 0x08A5E390 # System::objectPtr; EU symbol +0x120 in this US executable.
