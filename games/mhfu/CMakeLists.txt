@@ -69,12 +69,6 @@ if(MHF_MHFU_GENERATED)
     if(WIN32)
         target_sources(mhfu PRIVATE ${MHF_WINDOWS_ICON_RC})
     endif()
-    if(MSVC)
-        # The host logs to a file at startup; use the GUI subsystem so Windows
-        # does not open an otherwise-empty console window for the game.
-        # Keep main() as the entrypoint so the regular CRT argument setup remains.
-        target_link_options(mhfu PRIVATE "/SUBSYSTEM:WINDOWS" "/ENTRY:mainCRTStartup")
-    endif()
     if(TARGET mhf_psp_frontend)
         target_link_libraries(mhfu PRIVATE mhf_psp_frontend)
     endif()
