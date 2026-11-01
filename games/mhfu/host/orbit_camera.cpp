@@ -158,6 +158,22 @@ void store_float(psprecomp::GuestMemory &memory, std::uint32_t address, float va
     memory.store32(address, std::bit_cast<std::uint32_t>(value));
 }
 
+// Rotate a camera position around the player's XZ target. The native STD
+// routine can request a one-frame recenter while the orbit is active; applying
+// the inverse angular correction to its resolved output preserves collision
+// adjustments without allowing that recenter to take ownership of the view.
+bool rotate_xz_about(psprecomp::GuestMemory &memory, std::uint32_t address,
+                     float center_x, float center_z, float cosine, float sine) {
+    if (!memory.contains(address, 12u)) return false;
+    const float x = load_float(memory, address);
+    const float z = load_float(memory, address + 8u);
+    const float dx = x - center_x;
+    const float dz = z - center_z;
+    store_float(memory, address, center_x + cosine * dx + sine * dz);
+    store_float(memory, address + 8u, center_z - sine * dx + cosine * dz);
+    return true;
+}
+
 float shape_axis(float value) {
     value = std::clamp(value, -1.0f, 1.0f);
     const float magnitude = std::fabs(value);
@@ -228,22 +244,21 @@ bool special_player_state(const psprecomp::GuestMemory &memory, std::uint32_t pl
     if (special_player_action(memory, player)) return true;
 
     if (!range_ok(memory, std_data, kStdIsFalldown, 1u) ||
-        !range_ok(memory, std_data, kStdIsViewBlocked, 1u) ||
         !range_ok(memory, std_data, kStdGunTargetingState, 1u) ||
         !range_ok(memory, std_data, kStdIsShoulderCam, 1u) ||
         !range_ok(memory, std_data, kStdIsKabegiwa, 1u) ||
-        !range_ok(memory, std_data, kStdKabegiwaTimer, 1u) ||
-        !range_ok(memory, std_data, kStdIsFastRotate, 1u)) {
+        !range_ok(memory, std_data, kStdKabegiwaTimer, 1u)) {
         return true;
     }
 
+    // is_view_blocked and is_fast_rotate are transient outputs of the
+    // native camera solver. They must not permanently disable the player orbit:
+    // the replacement masks/reasserts rotation state around each native update.
     return memory.load8(std_data + kStdIsFalldown) != 0u ||
-        memory.load8(std_data + kStdIsViewBlocked) != 0u ||
         memory.load8(std_data + kStdIsKabegiwa) != 0u ||
         memory.load8(std_data + kStdKabegiwaTimer) != 0u ||
         static_cast<std::int8_t>(memory.load8(std_data + kStdGunTargetingState)) >= 0 ||
-        memory.load8(std_data + kStdIsShoulderCam) != 0u ||
-        memory.load8(std_data + kStdIsFastRotate) != 0u;
+        memory.load8(std_data + kStdIsShoulderCam) != 0u;
 }
 
 bool standard_camera_context(const psprecomp::GuestMemory &memory, std::uint32_t sub_camera,
@@ -956,14 +971,59 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
     // If native code deliberately changed the yaw after our input (for example
     // its player-turn/auto-recenter branch), hand control back to the stock
     // camera instead of letting the two controllers fight over subsequent frames.
-    const bool native_camera_override = memory.load16(std_data + kStdGoalRotation) != yaw_units ||
+    const std::uint16_t native_goal_rotation = memory.load16(std_data + kStdGoalRotation);
+    const std::uint16_t native_rotation = memory.load16(std_data + kStdGoalRotation + 2u);
+    const std::uint8_t native_fast_rotate = memory.load8(std_data + kStdIsFastRotate);
+    const std::uint8_t native_view_blocked = memory.load8(std_data + kStdIsViewBlocked);
+    const std::uint8_t native_kabegiwa = memory.load8(std_data + kStdIsKabegiwa);
+    const std::uint8_t native_kabegiwa_timer = memory.load8(std_data + kStdKabegiwaTimer);
+    const bool native_angle_override = native_goal_rotation != yaw_units || native_rotation != yaw_units;
+
+    // A normal player turn can make cam_sub_std briefly recenter its own yaw
+    // (Cam_senkai_chk). That is not a special camera and must not kill the
+    // analog orbit. Undo the resulting angular change in the resolved camera
+    // positions when the collision solver did not constrain the view.
+    if (native_angle_override || native_fast_rotate != 0u) {
+        const auto native_angle = static_cast<std::int16_t>(native_rotation);
+        const auto angle_delta_units = static_cast<std::int16_t>(
+            static_cast<std::uint16_t>(yaw_units - static_cast<std::uint16_t>(native_angle)));
+        const float angle_delta = static_cast<float>(angle_delta_units) / kAngleUnitsPerRadian;
+        const float cosine = std::cos(angle_delta);
+        const float sine = std::sin(angle_delta);
+        const bool collision_constrained = native_view_blocked != 0u ||
+            native_kabegiwa != 0u || native_kabegiwa_timer != 0u;
+        if (!collision_constrained && memory.contains(std_data, 0x60u) &&
+            memory.contains(sub_camera, 12u)) {
+            const float center_x = load_float(memory, std_data + 0x50u);
+            const float center_z = load_float(memory, std_data + 0x58u);
+            rotate_xz_about(memory, std_data + 0x00u, center_x, center_z, cosine, sine);
+            rotate_xz_about(memory, std_data + 0x20u, center_x, center_z, cosine, sine);
+            rotate_xz_about(memory, std_data + 0x40u, center_x, center_z, cosine, sine);
+            rotate_xz_about(memory, sub_camera, center_x, center_z, cosine, sine);
+        }
+        // Keep the persistent STD camera angles owned by the orbit. The next
+        // frame will start at this yaw instead of inheriting native recentering.
+        memory.store16(std_data + kStdGoalRotation, yaw_units);
+        memory.store16(std_data + kStdGoalRotation + 2u, yaw_units);
+        memory.store8(std_data + kStdIsFastRotate, 0u);
+        memory.store8(std_data + kStdInertiaTimer, 0u);
+        if (camera_trace_enabled()) {
+            std::fprintf(stderr,
+                "[mhfu-camera] STD neutralized native recenter goal=%04X rotation=%04X expected=%04X "
+                "fast=%u blocked=%u kabegiwa=%u timer=%u collision_corrected=%u\n",
+                static_cast<unsigned>(native_goal_rotation), static_cast<unsigned>(native_rotation),
+                static_cast<unsigned>(yaw_units), static_cast<unsigned>(native_fast_rotate),
+                static_cast<unsigned>(native_view_blocked), static_cast<unsigned>(native_kabegiwa),
+                static_cast<unsigned>(native_kabegiwa_timer),
+                static_cast<unsigned>(!collision_constrained));
+        }
+    }
+
+    const bool native_camera_override =
         memory.load8(std_data + kStdIsShoulderCam) != 0u ||
         static_cast<std::int8_t>(memory.load8(std_data + kStdGunTargetingState)) >= 0 ||
-        memory.load8(std_data + kStdIsFastRotate) != 0u ||
         memory.load8(std_data + kStdIsFalldown) != 0u ||
-        memory.load8(std_data + kStdIsKabegiwa) != 0u ||
-        memory.load8(std_data + kStdIsViewBlocked) != 0u ||
-        memory.load8(std_data + kStdKabegiwaTimer) != 0u;
+        native_kabegiwa != 0u || native_kabegiwa_timer != 0u;
 
     // Do not leave the temporary camera profile or masked controls in guest
     // memory. The native function keeps its valid pointer to the selected entry.
@@ -979,7 +1039,7 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
     memory.store16(std_data + kStdRisingEdge, saved_rising_edge);
 
     if (native_camera_override) {
-        camera_trace("fallback: native STD update overrode custom yaw or entered a native camera state");
+        camera_trace("fallback: native STD update entered a shoulder/aim/falldown/wall camera state");
         g_orbit = {};
         runtime.note_analog_camera_update(0u);
     }
