@@ -16,11 +16,13 @@
 #include <array>
 #include <bit>
 #include <cmath>
+#include <cstdarg>
 #include <cstdint>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 
 namespace mhf::psp {
 namespace {
@@ -28,6 +30,43 @@ namespace {
 bool camera_trace_enabled() {
     static const bool enabled = std::getenv("MHF_CAMERA_LOG") != nullptr;
     return enabled;
+}
+
+std::mutex g_camera_log_mutex;
+
+std::FILE *camera_log_file() {
+    // The launcher starts the game with its own directory as the working directory,
+    // beside game.log. Truncate once per game run so an old trace cannot be mistaken
+    // for the current session.
+    static std::FILE *file = [] {
+        std::FILE *opened = std::fopen("camera.log", "wb");
+        if (opened == nullptr) {
+            std::fprintf(stderr, "[mhfu-camera] unable to open camera.log; camera diagnostics unavailable\n");
+        } else {
+            std::fprintf(opened, "[mhfu-camera] logging started\n");
+            std::fflush(opened);
+        }
+        return opened;
+    }();
+    return file;
+}
+
+void camera_log(const char *format, ...) {
+    if (!camera_trace_enabled()) return;
+    std::FILE *file = camera_log_file();
+    if (file == nullptr) return;
+
+    std::lock_guard<std::mutex> lock(g_camera_log_mutex);
+    va_list args;
+    va_start(args, format);
+    std::vfprintf(file, format, args);
+    va_end(args);
+    // Keep the last diagnostic lines available even if the game terminates abruptly.
+    std::fflush(file);
+}
+
+void camera_log_start() {
+    if (camera_trace_enabled()) (void)camera_log_file();
 }
 
 void camera_trace(const char *reason) {
@@ -39,7 +78,7 @@ void camera_trace(const char *reason) {
     for (auto &entry : seen) {
         if (entry[0] == '\0') {
             std::snprintf(entry.data(), entry.size(), "%s", reason);
-            std::fprintf(stderr, "[mhfu-camera] %s\n", reason);
+            camera_log("[mhfu-camera] %s\n", reason);
             return;
         }
     }
@@ -783,7 +822,7 @@ void replace_offset_pan_camera(Runtime &runtime, Context &context, GuestFunction
         static std::uint64_t last_input_trace_us = 0u;
         if (last_input_trace_us == 0u || now < last_input_trace_us ||
             now - last_input_trace_us >= 500'000u) {
-            std::fprintf(stderr,
+            camera_log(
                 "[mhfu-camera] OFFSET_PAN input area=0x%08X sub=(active=%u mode=%u state=%u) "
                 "rx=%+.3f ry=%+.3f shaped=(%+.3f,%+.3f) buttons=0x%08X "
                 "yaw=%.3f elevation=%.3f player=(%.1f,%.1f,%.1f) "
@@ -841,7 +880,7 @@ void sync_standard_orbit_yaw_from_native(
         const std::uint64_t now = runtime.now_us();
         if (last_sync_trace_us == 0u || now < last_sync_trace_us ||
             now - last_sync_trace_us >= 500'000u) {
-            std::fprintf(stderr,
+            camera_log(
                 "[mhfu-camera] protected-state yaw sync native_yaw=%.3f yaw_units=%u\n",
                 static_cast<double>(native_yaw),
                 static_cast<unsigned>(static_cast<std::uint16_t>(native_rotation)));
@@ -1074,7 +1113,7 @@ void update_standard_orbit_before_native(Runtime &runtime, std::uint32_t camera)
         static std::uint64_t last_input_trace_us = 0u;
         if (last_input_trace_us == 0u || now < last_input_trace_us ||
             now - last_input_trace_us >= 500'000u) {
-            std::fprintf(stderr,
+            camera_log(
                 "[mhfu-camera] STD-before-native input rx=%+.3f ry=%+.3f "
                 "shaped=(%+.3f,%+.3f) buttons=0x%08X "
                 "yaw=%.3f elevation=%.3f native_collision_flags=%u "
@@ -1241,7 +1280,7 @@ void apply_standard_orbit_pitch_after_native(Runtime &runtime, std::uint32_t cam
         if (last_pitch_trace_us == 0u || now < last_pitch_trace_us ||
             now - last_pitch_trace_us >= 500'000u) {
             const float before_elevation = std::atan2(offset_y, horizontal);
-            std::fprintf(stderr,
+            camera_log(
                 "[mhfu-camera] STD-post-native pitch desired=%.3f before=%.3f "
                 "after=%.3f resolved_distance=%.1f ground_adjusted=%u "
                 "floor_clamp=%u goal_y=%.1f corrected_y=%.1f\n",
@@ -1275,7 +1314,7 @@ void replace_standard_camera(Runtime &runtime, Context &context, GuestFunction o
             const std::uint8_t selected = readable ? memory.load8(camera + 0xDC4u) : 0xFFu;
             const bool hunt = is_hunt_camera_context(memory, camera);
             const ControllerState &pad = controller_state(runtime);
-            std::fprintf(stderr,
+            camera_log(
                 "[mhfu-camera] STD hook this=0x%08X camera=0x%08X area_sub=%u selected=%u "
                 "hunt=%u buttons=0x%08X R1=%u rx=%+.3f ry=%+.3f\n",
                 static_cast<unsigned>(sub_camera), static_cast<unsigned>(camera),
@@ -1388,7 +1427,7 @@ void replace_stage_camera(Runtime &runtime, Context &context, GuestFunction orig
                 ? memory.load8(camera + kCameraFromSubCamera + 4u * kSubCameraStride + kSubCameraIsActive) : 0xFFu;
             const std::uint8_t active5 = range_ok(memory, camera, kCameraFromSubCamera + 5u * kSubCameraStride + kSubCameraIsActive, 1u)
                 ? memory.load8(camera + kCameraFromSubCamera + 5u * kSubCameraStride + kSubCameraIsActive) : 0xFFu;
-            std::fprintf(stderr,
+            camera_log(
                 "[mhfu-camera] STG callback camera=0x%08X area_sub=%u selected=%u flags=(%u,%u,%u) rx=%+.3f ry=%+.3f\n",
                 static_cast<unsigned>(camera), static_cast<unsigned>(area_sub),
                 static_cast<unsigned>(selected), static_cast<unsigned>(active3),
@@ -1426,7 +1465,7 @@ void replace_stage_camera(Runtime &runtime, Context &context, GuestFunction orig
         if (last_decision_trace_us == 0u || now < last_decision_trace_us ||
             now - last_decision_trace_us >= 500'000u) {
             const ControllerState &pad = controller_state(runtime);
-            std::fprintf(stderr,
+            camera_log(
                 "[mhfu-camera] STG decision hunt=%u area_sub=%u area=0x%08X "
                 "area_type=%u area_type_ok=%u offset_pan=%u player=0x%08X "
                 "player_action=%u player_action_ok=%u rx=%+.3f ry=%+.3f\n",
@@ -1490,6 +1529,8 @@ void replace_stage_camera(Runtime &runtime, Context &context, GuestFunction orig
 }
 
 void register_mhfu_orbit_camera(Runtime &runtime) {
+    // Open/truncate the camera log at startup, even if no camera hook runs before a crash.
+    camera_log_start();
     runtime.register_replacement("mh_camera_orbit_update", &replace_standard_camera);
     runtime.register_replacement("mh_camera_stage_update", &replace_stage_camera);
 }
